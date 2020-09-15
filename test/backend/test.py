@@ -157,6 +157,11 @@ test_to_enable = [
     "test_exp_cpu",
     "test_exp_example_cpu",
 
+    # Gather Op:
+    #"test_gather_0",
+    #"test_gather_1",
+    #"test_gather_negative_indices",
+
     # Gemm Op:
     "test_gemm_all_attributes_cpu",
     "test_gemm_alpha_cpu",
@@ -415,8 +420,10 @@ test_to_enable = [
     "test_split_variable_parts_2d_cpu",
     "test_split_variable_parts_default_axis_cpu",
 
-    # ResNet
+    # Model
     "test_resnet50_cpu",
+    "test_vgg19_cpu",
+    "test_shufflenet_cpu",
 ]
 
 
