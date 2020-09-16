@@ -478,7 +478,7 @@ static void insertConvTransposeSpatialDim(SmallVectorImpl<int64_t> &outputDims,
 /// Dialect creation, the instance will be owned by the context. This is the
 /// point of registration of custom types and operations for the dialect.
 ONNXOpsDialect::ONNXOpsDialect(mlir::MLIRContext *ctx)
-    : mlir::Dialect(getDialectNamespace(), ctx) {
+    : mlir::Dialect(getDialectNamespace(), ctx, TypeID::get<ONNXOpsDialect>()) {
   addOperations<
 #define GET_OP_LIST
 #include "src/Dialect/ONNX/ONNXOps.cpp.inc"
@@ -512,6 +512,8 @@ mlir::Type ONNXOpsDialect::parseType(mlir::DialectAsmParser &parser) const {
     if (parser.parseGreater())
       return Type();
     return SeqType::get(elementTypes);
+  } else {
+    llvm_unreachable("Unexpected onnxmlir keyword");
   }
 }
 
@@ -2379,6 +2381,18 @@ LogicalResult ONNXShapeOp::inferShapes() {
 }
 
 //===----------------------------------------------------------------------===//
+// Size
+//===----------------------------------------------------------------------===//
+
+LogicalResult ONNXSizeOp::inferShapes() {
+  // Output is scalar of int64 containing the size of the input tensor.
+  SmallVector<int64_t, 1> outDims;
+  getResult().setType(
+      RankedTensorType::get(outDims, IntegerType::get(64, getContext())));
+  return success();
+}
+
+//===----------------------------------------------------------------------===//
 // Tile
 //===----------------------------------------------------------------------===//
 
@@ -2885,7 +2899,7 @@ struct SeqTypeStorage : public mlir::TypeStorage {
 SeqType SeqType::get(llvm::ArrayRef<mlir::Type> elementTypes) {
   assert(!elementTypes.empty() && "expected non-empty seq");
   mlir::MLIRContext *ctx = elementTypes.front().getContext();
-  return Base::get(ctx, ONNXTypes::SEQ, elementTypes);
+  return Base::get(ctx, elementTypes);
 }
 
 llvm::ArrayRef<mlir::Type> SeqType::getElementTypes() {
