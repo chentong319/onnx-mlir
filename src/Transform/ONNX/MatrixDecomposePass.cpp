@@ -2,7 +2,7 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-//===------- MatrixDecompsePass.cpp - ONNX Op Transform ------------------===//
+//===------- MatrixDecomposePass.cpp - ONNX Op Transform ------------------===//
 //
 // Copyright 2019-2020 The IBM Research Authors.
 //
@@ -27,9 +27,9 @@ using namespace mlir;
 
 namespace {
 
-struct MatrixDecompsePass : public mlir::PassWrapper<MatrixDecompsePass,
+struct MatrixDecomposePass : public mlir::PassWrapper<MatrixDecomposePass,
                                  OperationPass<func::FuncOp>> {
-  MLIR_DEFINE_EXPLICIT_INTERNAL_INLINE_TYPE_ID(MatrixDecompsePass)
+  MLIR_DEFINE_EXPLICIT_INTERNAL_INLINE_TYPE_ID(MatrixDecomposePass)
 
   StringRef getArgument() const override { return "onnx-matrix-decompose"; }
 
@@ -39,14 +39,14 @@ struct MatrixDecompsePass : public mlir::PassWrapper<MatrixDecompsePass,
 
   Option<std::string> onnxMatrixDecomposeFile{*this, "onnx-matrix-decompose-file",
       llvm::cl::desc("name of file that specify which constant to be decomposed."),
-      llvm::cl::init("matrix_decompse.txt")};
+      llvm::cl::init("matrix_decompose.txt")};
 
-  MatrixDecompsePass() = default;
-  MatrixDecompsePass(const MatrixDecompsePass &pass)
-      : mlir::PassWrapper<MatrixDecompsePass,
+  MatrixDecomposePass() = default;
+  MatrixDecomposePass(const MatrixDecomposePass &pass)
+      : mlir::PassWrapper<MatrixDecomposePass,
             OperationPass<func::FuncOp>>() {}
 
-  MatrixDecompsePass(std::string fileName) {
+  MatrixDecomposePass(std::string fileName) {
     this->onnxMatrixDecomposeFile = fileName;
   }
 
@@ -74,11 +74,11 @@ struct MatrixDecompsePass : public mlir::PassWrapper<MatrixDecompsePass,
 /*!
  * Create an matrix decompose pass.
  */
-std::unique_ptr<mlir::Pass> createMatrixDecompsePass() {
-  return std::make_unique<MatrixDecompsePass>();
+std::unique_ptr<mlir::Pass> onnx_mlir::createMatrixDecomposePass() {
+  return std::make_unique<MatrixDecomposePass>();
 }
 
-std::unique_ptr<mlir::Pass> createMatrixDecompsePass(
+std::unique_ptr<mlir::Pass> onnx_mlir::createMatrixDecomposePass(
     std::string fileName) {
-  return std::make_unique<MatrixDecompsePass>(fileName);
+  return std::make_unique<MatrixDecomposePass>(fileName);
 }

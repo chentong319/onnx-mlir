@@ -68,8 +68,8 @@ std::unique_ptr<mlir::Pass> createStandardFuncReturnPass();
 std::unique_ptr<mlir::Pass> createONNXHybridTransformPass();
 
 /// Decompose Matrix into two matrices
-std::unique_ptr<mlir::Pass> createMatrixDecompsePass();
-std::unique_ptr<mlir::Pass> createMatrixDecompsePass(
+std::unique_ptr<mlir::Pass> createMatrixDecomposePass();
+std::unique_ptr<mlir::Pass> createMatrixDecomposePass(
     std::string fileName);
 
 /// Pass for analyzing unknown dimension in ONNX operations.
