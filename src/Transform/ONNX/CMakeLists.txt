@@ -108,3 +108,12 @@ add_onnx_mlir_library(OMONNXStandardFuncReturnPass
   OMONNXOps
   OMShapeInference
   )
+
+add_onnx_mlir_library(OMONNXMatrixDecompsePass
+  MatrixDecompose.cpp
+  MatrixDecomposePass.cpp
+
+  LINK_LIBS PUBLIC
+  MLIRTransformUtils
+  OMONNXOps
+  )
