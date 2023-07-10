@@ -44,29 +44,48 @@ struct MatrixDecomposePass : public mlir::PassWrapper<MatrixDecomposePass,
   MatrixDecomposePass() = default;
   MatrixDecomposePass(const MatrixDecomposePass &pass)
       : mlir::PassWrapper<MatrixDecomposePass,
-            OperationPass<func::FuncOp>>() {}
+            OperationPass<func::FuncOp>>() {
+    this->onnxMatrixDecomposeFile = pass.onnxMatrixDecomposeFile;
+  }
 
   MatrixDecomposePass(std::string fileName) {
     this->onnxMatrixDecomposeFile = fileName;
   }
 
+#if 0
   LogicalResult initialize(MLIRContext *context) override {
     RewritePatternSet cumulativePatterns(context);
     // Add patterns
-    cumulativePatterns.insert<onnx_mlir::MatrixDecomposePattern>(context);
+    PatternBenefit highPriority(10000);
+    cumulativePatterns.insert<onnx_mlir::MatrixDecomposePattern>(context, highPriority);
     patterns = FrozenRewritePatternSet(std::move(cumulativePatterns));
     return success();
   }
-  void runOnOperation() override {
-    func::FuncOp f = getOperation();
-    Region &body = f.getBody();
+#endif
 
-    GreedyRewriteConfig config;
-    config.useTopDownTraversal = true;
-    (void)applyPatternsAndFoldGreedily(body, patterns, config);
+  void runOnOperation() final {
+    func::FuncOp f = getOperation();
+    //Region &body = f.getBody();
+
+    //GreedyRewriteConfig config;
+    //config.useTopDownTraversal = true;
+    //(void)applyPatternsAndFoldGreedily(body, patterns, config);
+
+    ConversionTarget target(getContext());
+    target.addLegalDialect<ONNXDialect, arith::ArithDialect, func::FuncDialect>();
+
+    target.addDynamicallyLegalOp<ONNXConstantOp>([](ONNXConstantOp op) {
+      return !onnx_mlir::MatrixDecomposePattern::toDecompose(op, "");
+    });
+
+    MLIRContext *context = &getContext();
+    RewritePatternSet patterns(context);
+    patterns.insert<onnx_mlir::MatrixDecomposePattern>(context);
+    if (failed(applyPartialConversion(f, target, std::move(patterns))))
+      signalPassFailure();
   }
 
-  FrozenRewritePatternSet patterns;
+  //FrozenRewritePatternSet patterns;
 }; 
 
 } // end anonymous namespace
