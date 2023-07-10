@@ -24,7 +24,7 @@ public:
   mlir::LogicalResult matchAndRewrite(mlir::ONNXConstantOp ConstantOp,
       mlir::PatternRewriter &rewriter) const override;
 
-  static bool toDecompose(mlir::ONNXConstantOp, std::string flag);
+  static bool toDecompose(mlir::ONNXConstantOp, std::vector<std::string> list);
 };
 
 } // namespace onnx_mlir

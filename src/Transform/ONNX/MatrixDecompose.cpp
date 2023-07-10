@@ -108,9 +108,21 @@ LogicalResult MatrixDecomposePattern::matchAndRewrite(
   return success();
 }
 
-bool MatrixDecomposePattern::toDecompose(ONNXConstantOp constantOp, std::string flag) {
-  // flag is intended to be used to compare label info.
+bool MatrixDecomposePattern::toDecompose(ONNXConstantOp constantOp, std::vector<std::string> constantList) {
+  static const int64_t SIZE_THRESHOLD = 2;
+  // Check the possible candidate
 
+  // Check the shape
+  Type ty = constantOp->getResultTypes()[0];
+  int64_t rank = getRank(ty);
+  if (rank != 2)
+    return false;
+
+  ArrayRef<int64_t> shape = getShape(ty);
+  for(int64_t dim : shape) {
+    if (dim < SIZE_THRESHOLD)
+      return false;
+  }
   // Check the usage of the constant.
   if (!constantOp->hasOneUse())
     return false;
@@ -118,9 +130,24 @@ bool MatrixDecomposePattern::toDecompose(ONNXConstantOp constantOp, std::string 
   if (!isa<ONNXMatMulOp, ONNXGemmOp>(useOp))
     return false;
 
-  // Use the attribute as mark
-  //if (!useOp->hasAttr("LowRankDecompose"))
-    //return false;
+  Location loc = constantOp->getLoc();
+  if (loc.isa<NameLoc>()) {
+    // ToFix: Use location.walker to handle fused Location
+    NameLoc nameLoc = loc.cast<NameLoc>();
+    llvm::StringRef name = nameLoc.getName().getValue();
+    if (constantList.size() == 0) {
+      // Scanning mode: print out all the candidate
+      printf("constant %s\n", name.data());
+      return false;
+    } else {
+      for(std::string specified : constantList) {
+        if (specified == name)
+          return true;
+      }
+      return false;
+    }
+  }
+    
   return true;
 }
 

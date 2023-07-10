@@ -13,9 +13,8 @@
 //
 //===----------------------------------------------------------------------===//
 
-//#include "mlir/IR/OperationSupport.h"
-//#include "mlir/Pass/PassManager.h"
-//#include "mlir/Transforms/Passes.h"
+#include <fstream>
+
 #include "mlir/Pass/Pass.h"
 #include "mlir/Transforms/GreedyPatternRewriteDriver.h"
 
@@ -52,30 +51,35 @@ struct MatrixDecomposePass : public mlir::PassWrapper<MatrixDecomposePass,
     this->onnxMatrixDecomposeFile = fileName;
   }
 
-#if 0
   LogicalResult initialize(MLIRContext *context) override {
-    RewritePatternSet cumulativePatterns(context);
-    // Add patterns
-    PatternBenefit highPriority(10000);
-    cumulativePatterns.insert<onnx_mlir::MatrixDecomposePattern>(context, highPriority);
-    patterns = FrozenRewritePatternSet(std::move(cumulativePatterns));
+    // Read the file
+    matrixToDecompose.clear();
+    std::ifstream inFile;
+    inFile.open(onnxMatrixDecomposeFile);
+    if (inFile) {
+      std::string locName;
+      while(inFile >> locName) {
+        matrixToDecompose.push_back(locName);
+      }
+      inFile.close();
+    } else {
+      // Do nothing
+      // The pass is used to file out all the candidate;
+    }
+
     return success();
   }
-#endif
 
   void runOnOperation() final {
     func::FuncOp f = getOperation();
-    //Region &body = f.getBody();
-
-    //GreedyRewriteConfig config;
-    //config.useTopDownTraversal = true;
-    //(void)applyPatternsAndFoldGreedily(body, patterns, config);
 
     ConversionTarget target(getContext());
+    // This sentence is needed.
+    // Not clear about its usage.
     target.addLegalDialect<ONNXDialect, arith::ArithDialect, func::FuncDialect>();
 
-    target.addDynamicallyLegalOp<ONNXConstantOp>([](ONNXConstantOp op) {
-      return !onnx_mlir::MatrixDecomposePattern::toDecompose(op, "");
+    target.addDynamicallyLegalOp<ONNXConstantOp>([=](ONNXConstantOp op) {
+      return !onnx_mlir::MatrixDecomposePattern::toDecompose(op, matrixToDecompose);
     });
 
     MLIRContext *context = &getContext();
@@ -85,7 +89,8 @@ struct MatrixDecomposePass : public mlir::PassWrapper<MatrixDecomposePass,
       signalPassFailure();
   }
 
-  //FrozenRewritePatternSet patterns;
+  // Data to control matrix decompose
+  std::vector<std::string> matrixToDecompose;
 }; 
 
 } // end anonymous namespace
