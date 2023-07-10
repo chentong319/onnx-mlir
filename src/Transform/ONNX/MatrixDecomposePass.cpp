@@ -45,6 +45,7 @@ struct MatrixDecomposePass : public mlir::PassWrapper<MatrixDecomposePass,
       : mlir::PassWrapper<MatrixDecomposePass,
             OperationPass<func::FuncOp>>() {
     this->onnxMatrixDecomposeFile = pass.onnxMatrixDecomposeFile;
+    this->matrixToDecompose = pass.matrixToDecompose;
   }
 
   MatrixDecomposePass(std::string fileName) {
@@ -59,6 +60,7 @@ struct MatrixDecomposePass : public mlir::PassWrapper<MatrixDecomposePass,
     if (inFile) {
       std::string locName;
       while(inFile >> locName) {
+        //printf("string %s\n", locName.c_str());
         matrixToDecompose.push_back(locName);
       }
       inFile.close();
@@ -78,7 +80,7 @@ struct MatrixDecomposePass : public mlir::PassWrapper<MatrixDecomposePass,
     // Not clear about its usage.
     target.addLegalDialect<ONNXDialect, arith::ArithDialect, func::FuncDialect>();
 
-    target.addDynamicallyLegalOp<ONNXConstantOp>([=](ONNXConstantOp op) {
+    target.addDynamicallyLegalOp<ONNXConstantOp>([this](ONNXConstantOp op) {
       return !onnx_mlir::MatrixDecomposePattern::toDecompose(op, matrixToDecompose);
     });
 
