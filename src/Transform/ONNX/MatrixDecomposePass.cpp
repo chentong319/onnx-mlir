@@ -42,18 +42,29 @@ struct MatrixDecomposePass : public mlir::PassWrapper<MatrixDecomposePass,
           "name of file that specify which constant to be decomposed."),
       llvm::cl::init("matrix_decompose.txt")};
 
+  Option<int> onnxMatrixDecomposeStage{*this, "onnx-matrix-decompose-stage",
+      llvm::cl::desc("which stage for constant decomposition."
+                     "0: list candidate"
+                     "1: online decomposition(default)"
+                     "2: offline decomposition"),
+      llvm::cl::init(1)};
+
   MatrixDecomposePass() = default;
   MatrixDecomposePass(const MatrixDecomposePass &pass)
       : mlir::PassWrapper<MatrixDecomposePass, OperationPass<func::FuncOp>>() {
     this->onnxMatrixDecomposeFile = pass.onnxMatrixDecomposeFile;
+    this->onnxMatrixDecomposeStage = pass.onnxMatrixDecomposeStage;
     this->matrixToDecompose = pass.matrixToDecompose;
+    this->stage = pass.stage;
   }
 
-  MatrixDecomposePass(std::string fileName) {
+  MatrixDecomposePass(std::string fileName, int stage) {
     this->onnxMatrixDecomposeFile = fileName;
+    this->stage = stage;
   }
 
   LogicalResult initialize(MLIRContext *context) override {
+    stage = onnxMatrixDecomposeStage;
     // Read the file
     matrixToDecompose.clear();
     std::ifstream inFile;
@@ -84,19 +95,20 @@ struct MatrixDecomposePass : public mlir::PassWrapper<MatrixDecomposePass,
 
     target.addDynamicallyLegalOp<ONNXConstantOp>([this](ONNXConstantOp op) {
       return !onnx_mlir::MatrixDecomposePattern::toDecompose(
-          op, matrixToDecompose);
+          op, matrixToDecompose, stage);
     });
 
     MLIRContext *context = &getContext();
     RewritePatternSet patterns(context);
     patterns.insert<onnx_mlir::MatrixDecomposePattern>(
-        context, matrixToDecompose);
+        context, matrixToDecompose, stage);
     if (failed(applyPartialConversion(f, target, std::move(patterns))))
       signalPassFailure();
   }
 
   // Data to control matrix decompose
   onnx_mlir::MatrixDecomposeVectorType matrixToDecompose;
+  int stage;
 };
 
 } // end anonymous namespace
@@ -109,6 +121,6 @@ std::unique_ptr<mlir::Pass> onnx_mlir::createMatrixDecomposePass() {
 }
 
 std::unique_ptr<mlir::Pass> onnx_mlir::createMatrixDecomposePass(
-    std::string fileName) {
-  return std::make_unique<MatrixDecomposePass>(fileName);
+    std::string fileName, int stage) {
+  return std::make_unique<MatrixDecomposePass>(fileName, stage);
 }

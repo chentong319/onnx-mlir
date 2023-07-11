@@ -22,10 +22,10 @@ using namespace mlir;
 
 namespace onnx_mlir {
 
-static Value rewriteMatMul(ONNXConstantOp C, ONNXCustomOp C1, ONNXCustomOp C2,
+static Value rewriteMatMul(ONNXConstantOp COp, Value C1, Value C2,
     MultiDialectBuilder<OnnxBuilder> create, int64_t m, int64_t n, int64_t r) {
-  Operation *useOp = *C->getUsers().begin();
-  if (useOp->getOperand(0).getDefiningOp() == C) {
+  Operation *useOp = *COp->getUsers().begin();
+  if (useOp->getOperand(0).getDefiningOp() == COp) {
     // C is the first input
     // C1<m,r>xC2<r,n>xB<n, k>
     // C1<m,r>x(C2<r,n>xB<n, k>)
@@ -34,10 +34,9 @@ static Value rewriteMatMul(ONNXConstantOp C, ONNXCustomOp C1, ONNXCustomOp C2,
     int64_t k = getShape(B.getType())[1];
     Type elementType = getElementType(B.getType());
     RankedTensorType tyR1 = RankedTensorType::get({r, k}, elementType);
-    auto firstMatMul = create.onnx.matmul(tyR1, C2.getResults()[0], B);
+    auto firstMatMul = create.onnx.matmul(tyR1, C2, B);
     RankedTensorType tyR2 = RankedTensorType::get({m, k}, elementType);
-    auto secondMatMul =
-        create.onnx.matmul(tyR2, C1.getResults()[0], firstMatMul);
+    auto secondMatMul = create.onnx.matmul(tyR2, C1, firstMatMul);
     return secondMatMul;
   } else {
     // C is the second input
@@ -47,10 +46,9 @@ static Value rewriteMatMul(ONNXConstantOp C, ONNXCustomOp C1, ONNXCustomOp C2,
     int64_t k = getShape(A.getType())[0];
     Type elementType = getElementType(A.getType());
     RankedTensorType tyR1 = RankedTensorType::get({k, r}, elementType);
-    auto firstMatMul = create.onnx.matmul(tyR1, A, C1.getResults()[0]);
+    auto firstMatMul = create.onnx.matmul(tyR1, A, C1);
     RankedTensorType tyR2 = RankedTensorType::get({k, n}, elementType);
-    auto secondMatMul =
-        create.onnx.matmul(tyR2, firstMatMul, C2.getResults()[0]);
+    auto secondMatMul = create.onnx.matmul(tyR2, firstMatMul, C2);
     secondMatMul.dump();
     return secondMatMul;
   }
@@ -79,30 +77,51 @@ LogicalResult MatrixDecomposePattern::matchAndRewrite(
 
   RankedTensorType tyC1 = RankedTensorType::get({m, r}, elementType);
   RankedTensorType tyC2 = RankedTensorType::get({r, n}, elementType);
-
-  StringAttr funcNameAttr = rewriter.getStringAttr("getConstant");
   ValueRange inputs = constantOp->getOperands();
 
-  ONNXCustomOp C1Op =
-      rewriter.create<ONNXCustomOp>(constantOp->getLoc(), tyC1, inputs);
-  ONNXCustomOp C2Op =
-      rewriter.create<ONNXCustomOp>(constantOp->getLoc(), tyC2, inputs);
-  C1Op->setAttr("function_name", funcNameAttr);
-  StringAttr fileNameAttr1 = rewriter.getStringAttr("c1.txt");
-  C1Op->setAttr("file_name", fileNameAttr1);
+  Value C1, C2;
+  if (stage == 1) { // stage one
+    StringAttr funcNameAttr = rewriter.getStringAttr("DecompseConstant");
+    std::vector<Type> outputTypes({tyC1, tyC2});
+    // Create a new constant just with different location
+    Value newC =
+        rewriter.create<ONNXConstantOp>(UnknownLoc::get(rewriter.getContext()),
+            Attribute(), constantOp.getValueAttr());
+    ONNXCustomOp COp =
+        rewriter.create<ONNXCustomOp>(constantOp->getLoc(), outputTypes, newC);
+    COp->setAttr("function_name", funcNameAttr);
+    C1 = COp.getResults()[0];
+    C2 = COp.getResults()[1];
+  } else { // stage two
+    StringAttr funcNameAttr = rewriter.getStringAttr("getConstant");
+    ONNXCustomOp C1Op =
+        rewriter.create<ONNXCustomOp>(constantOp->getLoc(), tyC1, inputs);
+    ONNXCustomOp C2Op =
+        rewriter.create<ONNXCustomOp>(constantOp->getLoc(), tyC2, inputs);
+    C1Op->setAttr("function_name", funcNameAttr);
 
-  C2Op->setAttr("function_name", funcNameAttr);
-  StringAttr fileNameAttr2 = rewriter.getStringAttr("c2.txt");
-  C2Op->setAttr("file_name", fileNameAttr2);
+    // Filename is determined by the constant loc
+    Location loc = constantOp->getLoc();
+    NameLoc nameLoc = loc.cast<NameLoc>();
+    llvm::StringRef name = nameLoc.getName().getValue();
+    StringAttr fileNameAttr1 = rewriter.getStringAttr(name + "_1.txt");
+    C1Op->setAttr("file_name", fileNameAttr1);
+
+    C2Op->setAttr("function_name", funcNameAttr);
+    StringAttr fileNameAttr2 = rewriter.getStringAttr(name + "_2.txt");
+    C2Op->setAttr("file_name", fileNameAttr2);
+    C1 = C1Op.getResults()[0];
+    C2 = C2Op.getResults()[0];
+  }
 
   // Check the use of the constant, assuming only one user
   Operation *useOp = *constantOp->getUsers().begin();
   MultiDialectBuilder<OnnxBuilder> create(rewriter, useOp->getLoc());
   Value resultVal;
   if (isa<ONNXMatMulOp>(useOp)) {
-    resultVal = rewriteMatMul(constantOp, C1Op, C2Op, create, m, n, r);
+    resultVal = rewriteMatMul(constantOp, C1, C2, create, m, n, r);
   } // else if (useOp.isa<ONNXGemmOp>()) {
-    // resultVal = rewriteGemm(constantOp, C1Op, C2Op, creat);
+    // resultVal = rewriteGemm(constantOp, C1, C2, creat);
   //}
   else {
     llvm_unreachable("expected");
@@ -113,9 +132,10 @@ LogicalResult MatrixDecomposePattern::matchAndRewrite(
   return success();
 }
 
-bool MatrixDecomposePattern::toDecompose(
-    ONNXConstantOp constantOp, MatrixDecomposeVectorType constantList) {
+bool MatrixDecomposePattern::toDecompose(ONNXConstantOp constantOp,
+    MatrixDecomposeVectorType constantList, int stage) {
   static const int64_t SIZE_THRESHOLD = 2;
+
   // Check the possible candidate
 
   // Check the shape
@@ -141,14 +161,16 @@ bool MatrixDecomposePattern::toDecompose(
     // ToFix: Use location.walker to handle fused Location
     NameLoc nameLoc = loc.cast<NameLoc>();
     llvm::StringRef name = nameLoc.getName().getValue();
-    if (constantList.size() == 0) {
+    if (stage == 0) {
       // Scanning mode: print out all the candidate
-      printf("constant %s\n", name.data());
+      printf(
+          "Candiate constant %s %lldx%lld\n", name.data(), shape[0], shape[1]);
       return false;
     } else {
       for (std::string specified : constantList) {
-        if (specified == name)
+        if (specified == name) {
           return true;
+        }
       }
       return false;
     }

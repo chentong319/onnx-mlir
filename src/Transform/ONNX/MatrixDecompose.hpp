@@ -26,16 +26,18 @@ public:
   using mlir::OpRewritePattern<mlir::ONNXConstantOp>::OpRewritePattern;
 
   MatrixDecomposePattern(
-      mlir::MLIRContext *context, MatrixDecomposeVectorType table)
+      mlir::MLIRContext *context, MatrixDecomposeVectorType table, int stage)
       : OpRewritePattern<mlir::ONNXConstantOp>(context),
-        matrixToDecompose(table){};
+        matrixToDecompose(table), stage(stage){};
 
   mlir::LogicalResult matchAndRewrite(mlir::ONNXConstantOp ConstantOp,
       mlir::PatternRewriter &rewriter) const override;
 
-  static bool toDecompose(mlir::ONNXConstantOp, MatrixDecomposeVectorType list);
+  static bool toDecompose(
+      mlir::ONNXConstantOp, MatrixDecomposeVectorType list, int stage);
 
   MatrixDecomposeVectorType matrixToDecompose;
+  int stage;
 };
 
 } // namespace onnx_mlir
