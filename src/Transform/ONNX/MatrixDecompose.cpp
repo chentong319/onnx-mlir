@@ -8,10 +8,10 @@
 //
 //===----------------------------------------------------------------------===//
 
-#include "src/Transform/ONNX/MatrixDecompose.hpp"
 #include "src/Dialect/Mlir/DialectBuilder.hpp"
 #include "src/Dialect/ONNX/DialectBuilder.hpp"
-//#include "src/Dialect/ONNX/ONNXOps/Math/Constant.hpp"
+#include "src/Transform/ONNX/MatrixDecompose.hpp"
+// #include "src/Dialect/ONNX/ONNXOps/Math/Constant.hpp"
 #include "src/Dialect/ONNX/ONNXOps/OpHelper.hpp"
 
 #include <tuple>
@@ -22,20 +22,22 @@ using namespace mlir;
 
 namespace onnx_mlir {
 
-static Value rewriteMatMul(ONNXConstantOp C, ONNXCustomOp C1, ONNXCustomOp C2, MultiDialectBuilder<OnnxBuilder> create, int64_t m, int64_t n, int64_t r) {
+static Value rewriteMatMul(ONNXConstantOp C, ONNXCustomOp C1, ONNXCustomOp C2,
+    MultiDialectBuilder<OnnxBuilder> create, int64_t m, int64_t n, int64_t r) {
   Operation *useOp = *C->getUsers().begin();
   if (useOp->getOperand(0).getDefiningOp() == C) {
     // C is the first input
     // C1<m,r>xC2<r,n>xB<n, k>
     // C1<m,r>x(C2<r,n>xB<n, k>)
-     
+
     Value B = useOp->getOperand(1);
     int64_t k = getShape(B.getType())[1];
     Type elementType = getElementType(B.getType());
     RankedTensorType tyR1 = RankedTensorType::get({r, k}, elementType);
     auto firstMatMul = create.onnx.matmul(tyR1, C2.getResults()[0], B);
     RankedTensorType tyR2 = RankedTensorType::get({m, k}, elementType);
-    auto secondMatMul = create.onnx.matmul(tyR2, C1.getResults()[0], firstMatMul);
+    auto secondMatMul =
+        create.onnx.matmul(tyR2, C1.getResults()[0], firstMatMul);
     return secondMatMul;
   } else {
     // C is the second input
@@ -47,7 +49,8 @@ static Value rewriteMatMul(ONNXConstantOp C, ONNXCustomOp C1, ONNXCustomOp C2, M
     RankedTensorType tyR1 = RankedTensorType::get({k, r}, elementType);
     auto firstMatMul = create.onnx.matmul(tyR1, A, C1.getResults()[0]);
     RankedTensorType tyR2 = RankedTensorType::get({k, n}, elementType);
-    auto secondMatMul = create.onnx.matmul(tyR2, firstMatMul, C2.getResults()[0]);
+    auto secondMatMul =
+        create.onnx.matmul(tyR2, firstMatMul, C2.getResults()[0]);
     secondMatMul.dump();
     return secondMatMul;
   }
@@ -72,16 +75,18 @@ LogicalResult MatrixDecomposePattern::matchAndRewrite(
   Type elementType = getElementType(ty);
   int64_t m = originConstantShape[0];
   int64_t n = originConstantShape[1];
-  int64_t r = 2;  // the value is chosen randomly
+  int64_t r = 2; // the value is chosen randomly
 
-  RankedTensorType tyC1 = RankedTensorType::get({m,r}, elementType);
-  RankedTensorType tyC2 = RankedTensorType::get({r,n}, elementType);
+  RankedTensorType tyC1 = RankedTensorType::get({m, r}, elementType);
+  RankedTensorType tyC2 = RankedTensorType::get({r, n}, elementType);
 
   StringAttr funcNameAttr = rewriter.getStringAttr("getConstant");
   ValueRange inputs = constantOp->getOperands();
-  
-  ONNXCustomOp C1Op = rewriter.create<ONNXCustomOp>(constantOp->getLoc(), tyC1, inputs);
-  ONNXCustomOp C2Op = rewriter.create<ONNXCustomOp>(constantOp->getLoc(), tyC2, inputs);
+
+  ONNXCustomOp C1Op =
+      rewriter.create<ONNXCustomOp>(constantOp->getLoc(), tyC1, inputs);
+  ONNXCustomOp C2Op =
+      rewriter.create<ONNXCustomOp>(constantOp->getLoc(), tyC2, inputs);
   C1Op->setAttr("function_name", funcNameAttr);
   StringAttr fileNameAttr1 = rewriter.getStringAttr("c1.txt");
   C1Op->setAttr("file_name", fileNameAttr1);
@@ -96,19 +101,20 @@ LogicalResult MatrixDecomposePattern::matchAndRewrite(
   Value resultVal;
   if (isa<ONNXMatMulOp>(useOp)) {
     resultVal = rewriteMatMul(constantOp, C1Op, C2Op, create, m, n, r);
-  } //else if (useOp.isa<ONNXGemmOp>()) {
-    //resultVal = rewriteGemm(constantOp, C1Op, C2Op, creat);
+  } // else if (useOp.isa<ONNXGemmOp>()) {
+    // resultVal = rewriteGemm(constantOp, C1Op, C2Op, creat);
   //}
   else {
     llvm_unreachable("expected");
   }
   rewriter.replaceOp(useOp, resultVal);
- 
+
   rewriter.eraseOp(constantOp);
   return success();
 }
 
-bool MatrixDecomposePattern::toDecompose(ONNXConstantOp constantOp, std::vector<std::string> constantList) {
+bool MatrixDecomposePattern::toDecompose(
+    ONNXConstantOp constantOp, MatrixDecomposeVectorType constantList) {
   static const int64_t SIZE_THRESHOLD = 2;
   // Check the possible candidate
 
@@ -119,7 +125,7 @@ bool MatrixDecomposePattern::toDecompose(ONNXConstantOp constantOp, std::vector<
     return false;
 
   ArrayRef<int64_t> shape = getShape(ty);
-  for(int64_t dim : shape) {
+  for (int64_t dim : shape) {
     if (dim < SIZE_THRESHOLD)
       return false;
   }
@@ -140,14 +146,14 @@ bool MatrixDecomposePattern::toDecompose(ONNXConstantOp constantOp, std::vector<
       printf("constant %s\n", name.data());
       return false;
     } else {
-      for(std::string specified : constantList) {
+      for (std::string specified : constantList) {
         if (specified == name)
           return true;
       }
       return false;
     }
   }
-    
+
   return true;
 }
 

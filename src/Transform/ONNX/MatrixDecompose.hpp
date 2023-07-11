@@ -16,15 +16,26 @@
 
 namespace onnx_mlir {
 
+typedef std::string MatrixDecomposeEntryType;
+
+typedef std::vector<MatrixDecomposeEntryType> MatrixDecomposeVectorType;
+
 class MatrixDecomposePattern
     : public mlir::OpRewritePattern<mlir::ONNXConstantOp> {
 public:
   using mlir::OpRewritePattern<mlir::ONNXConstantOp>::OpRewritePattern;
 
+  MatrixDecomposePattern(
+      mlir::MLIRContext *context, MatrixDecomposeVectorType table)
+      : OpRewritePattern<mlir::ONNXConstantOp>(context),
+        matrixToDecompose(table){};
+
   mlir::LogicalResult matchAndRewrite(mlir::ONNXConstantOp ConstantOp,
       mlir::PatternRewriter &rewriter) const override;
 
-  static bool toDecompose(mlir::ONNXConstantOp, std::vector<std::string> list);
+  static bool toDecompose(mlir::ONNXConstantOp, MatrixDecomposeVectorType list);
+
+  MatrixDecomposeVectorType matrixToDecompose;
 };
 
 } // namespace onnx_mlir

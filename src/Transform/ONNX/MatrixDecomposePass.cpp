@@ -36,14 +36,15 @@ struct MatrixDecomposePass : public mlir::PassWrapper<MatrixDecomposePass,
     return "Perform matrix decomposition and MatMul associativity rewriting.";
   }
 
-  Option<std::string> onnxMatrixDecomposeFile{*this, "onnx-matrix-decompose-file",
-      llvm::cl::desc("name of file that specify which constant to be decomposed."),
+  Option<std::string> onnxMatrixDecomposeFile{*this,
+      "onnx-matrix-decompose-file",
+      llvm::cl::desc(
+          "name of file that specify which constant to be decomposed."),
       llvm::cl::init("matrix_decompose.txt")};
 
   MatrixDecomposePass() = default;
   MatrixDecomposePass(const MatrixDecomposePass &pass)
-      : mlir::PassWrapper<MatrixDecomposePass,
-            OperationPass<func::FuncOp>>() {
+      : mlir::PassWrapper<MatrixDecomposePass, OperationPass<func::FuncOp>>() {
     this->onnxMatrixDecomposeFile = pass.onnxMatrixDecomposeFile;
     this->matrixToDecompose = pass.matrixToDecompose;
   }
@@ -59,8 +60,8 @@ struct MatrixDecomposePass : public mlir::PassWrapper<MatrixDecomposePass,
     inFile.open(onnxMatrixDecomposeFile);
     if (inFile) {
       std::string locName;
-      while(inFile >> locName) {
-        //printf("string %s\n", locName.c_str());
+      while (inFile >> locName) {
+        // printf("string %s\n", locName.c_str());
         matrixToDecompose.push_back(locName);
       }
       inFile.close();
@@ -78,22 +79,25 @@ struct MatrixDecomposePass : public mlir::PassWrapper<MatrixDecomposePass,
     ConversionTarget target(getContext());
     // This sentence is needed.
     // Not clear about its usage.
-    target.addLegalDialect<ONNXDialect, arith::ArithDialect, func::FuncDialect>();
+    target
+        .addLegalDialect<ONNXDialect, arith::ArithDialect, func::FuncDialect>();
 
     target.addDynamicallyLegalOp<ONNXConstantOp>([this](ONNXConstantOp op) {
-      return !onnx_mlir::MatrixDecomposePattern::toDecompose(op, matrixToDecompose);
+      return !onnx_mlir::MatrixDecomposePattern::toDecompose(
+          op, matrixToDecompose);
     });
 
     MLIRContext *context = &getContext();
     RewritePatternSet patterns(context);
-    patterns.insert<onnx_mlir::MatrixDecomposePattern>(context);
+    patterns.insert<onnx_mlir::MatrixDecomposePattern>(
+        context, matrixToDecompose);
     if (failed(applyPartialConversion(f, target, std::move(patterns))))
       signalPassFailure();
   }
 
   // Data to control matrix decompose
-  std::vector<std::string> matrixToDecompose;
-}; 
+  onnx_mlir::MatrixDecomposeVectorType matrixToDecompose;
+};
 
 } // end anonymous namespace
 
