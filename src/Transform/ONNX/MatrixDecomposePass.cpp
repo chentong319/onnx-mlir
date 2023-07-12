@@ -55,16 +55,18 @@ struct MatrixDecomposePass : public mlir::PassWrapper<MatrixDecomposePass,
     this->onnxMatrixDecomposeFile = pass.onnxMatrixDecomposeFile;
     this->onnxMatrixDecomposeStage = pass.onnxMatrixDecomposeStage;
     this->matrixToDecompose = pass.matrixToDecompose;
-    this->stage = pass.stage;
   }
 
   MatrixDecomposePass(std::string fileName, int stage) {
     this->onnxMatrixDecomposeFile = fileName;
-    this->stage = stage;
+    this->onnxMatrixDecomposeStage = stage;
   }
 
   LogicalResult initialize(MLIRContext *context) override {
-    stage = onnxMatrixDecomposeStage;
+    // Get candidate only
+    if (onnxMatrixDecomposeStage == 0)
+      return success();
+
     // Read the file
     matrixToDecompose.clear();
     std::ifstream inFile;
@@ -77,8 +79,7 @@ struct MatrixDecomposePass : public mlir::PassWrapper<MatrixDecomposePass,
       }
       inFile.close();
     } else {
-      // Do nothing
-      // The pass is used to file out all the candidate;
+      llvm_unreachable("cannot open file in matrix decomposition");
     }
 
     return success();
@@ -95,20 +96,19 @@ struct MatrixDecomposePass : public mlir::PassWrapper<MatrixDecomposePass,
 
     target.addDynamicallyLegalOp<ONNXConstantOp>([this](ONNXConstantOp op) {
       return !onnx_mlir::MatrixDecomposePattern::toDecompose(
-          op, matrixToDecompose, stage);
+          op, matrixToDecompose, onnxMatrixDecomposeStage);
     });
 
     MLIRContext *context = &getContext();
     RewritePatternSet patterns(context);
     patterns.insert<onnx_mlir::MatrixDecomposePattern>(
-        context, matrixToDecompose, stage);
+        context, matrixToDecompose, onnxMatrixDecomposeStage);
     if (failed(applyPartialConversion(f, target, std::move(patterns))))
       signalPassFailure();
   }
 
   // Data to control matrix decompose
   onnx_mlir::MatrixDecomposeVectorType matrixToDecompose;
-  int stage;
 };
 
 } // end anonymous namespace

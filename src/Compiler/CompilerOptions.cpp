@@ -285,6 +285,22 @@ llvm::cl::opt<std::string> reportHeapAfter("report-heap-after",
                    "<output-files-base-path>.heap.log"),
     llvm::cl::init(""), llvm::cl::cat(OnnxMlirOptions));
 
+llvm::cl::opt<int> matrixDecomposeStage("matrix-decompose-stage",
+    llvm::cl::desc(
+        "Specify what stage for matrix decompose\n"
+        "-1: disable"
+        "0 : candidate detection"
+        "1 : online decompose for accuracy test"
+        "2 : offline decompose for runtime test"),
+    llvm::cl::init(-1), llvm::cl::cat(OnnxMlirOptions));
+
+llvm::cl::opt<std::string> matrixDecomposeFile("matrix-decompose-file",
+    llvm::cl::desc(
+         "name of file that specifies which matrix is to be decomposed."
+         "Each line of the file contains the NameLoc string for the constant"),
+    llvm::cl::value_desc("file name"), llvm::cl::init("matrix_decompose.txt"),
+    llvm::cl::cat(OnnxMlirOptions));
+
 // Configuration states associated with certain options.
 // For example, when maccel is specified, NNPA can register
 // dependent libdnn.
