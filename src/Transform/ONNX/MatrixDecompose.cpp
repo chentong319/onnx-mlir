@@ -10,9 +10,8 @@
 
 #include "src/Dialect/Mlir/DialectBuilder.hpp"
 #include "src/Dialect/ONNX/DialectBuilder.hpp"
-#include "src/Transform/ONNX/MatrixDecompose.hpp"
-// #include "src/Dialect/ONNX/ONNXOps/Math/Constant.hpp"
 #include "src/Dialect/ONNX/ONNXOps/OpHelper.hpp"
+#include "src/Transform/ONNX/MatrixDecompose.hpp"
 
 #include <tuple>
 #include <unordered_map>
@@ -73,7 +72,7 @@ LogicalResult MatrixDecomposePattern::matchAndRewrite(
   Type elementType = getElementType(ty);
   int64_t m = originConstantShape[0];
   int64_t n = originConstantShape[1];
-  int64_t r = 2; // the value is chosen randomly
+  int64_t r = dimSize; 
 
   RankedTensorType tyC1 = RankedTensorType::get({m, r}, elementType);
   RankedTensorType tyC2 = RankedTensorType::get({r, n}, elementType);
@@ -90,6 +89,10 @@ LogicalResult MatrixDecomposePattern::matchAndRewrite(
     ONNXCustomOp COp =
         rewriter.create<ONNXCustomOp>(constantOp->getLoc(), outputTypes, newC);
     COp->setAttr("function_name", funcNameAttr);
+    IntegerAttr rAttr = 
+        IntegerAttr::get(rewriter.getIntegerType(64, /*isSigned=*/true),
+        APInt(64, /*value=*/dimSize, /*isSigned=*/true)); 
+    COp->setAttr("r_value", rAttr);
     C1 = COp.getResults()[0];
     C2 = COp.getResults()[1];
   } else { // stage two
@@ -133,9 +136,8 @@ LogicalResult MatrixDecomposePattern::matchAndRewrite(
 }
 
 bool MatrixDecomposePattern::toDecompose(ONNXConstantOp constantOp,
-    MatrixDecomposeVectorType constantList, int stage) {
-  static const int64_t SIZE_THRESHOLD = 2;
-
+    MatrixDecomposeVectorType constantList, int stage, int dimSize,
+    int dimThreshold) {
   // Check the possible candidate
 
   // Check the shape
@@ -146,7 +148,7 @@ bool MatrixDecomposePattern::toDecompose(ONNXConstantOp constantOp,
 
   ArrayRef<int64_t> shape = getShape(ty);
   for (int64_t dim : shape) {
-    if (dim < SIZE_THRESHOLD)
+    if (dim < dimThreshold)
       return false;
   }
   // Check the usage of the constant.
@@ -155,6 +157,16 @@ bool MatrixDecomposePattern::toDecompose(ONNXConstantOp constantOp,
   Operation *useOp = *constantOp->getUsers().begin();
   if (!isa<ONNXMatMulOp, ONNXGemmOp>(useOp))
     return false;
+  if (isa<ONNXGemmOp>(useOp)) {
+    // cannot used as C in Gemm
+    // In fact, the rank of C is 1.
+    if (useOp->getOperand(2).getDefiningOp() == useOp)
+      return false;
+  }
+
+  // For MatMul, the other matrix may be over 2D
+
+  int64_t useRank = getRank(useOp->getResultTypes()[0]);
 
   Location loc = constantOp->getLoc();
   if (loc.isa<NameLoc>()) {
@@ -164,7 +176,8 @@ bool MatrixDecomposePattern::toDecompose(ONNXConstantOp constantOp,
     if (stage == 0) {
       // Scanning mode: print out all the candidate
       printf(
-          "Candiate constant %s %lldx%lld\n", name.data(), shape[0], shape[1]);
+          "Candiate constant %s %lldx%lld, used by %s %lld\n", name.data(), shape[0], shape[1], isa<ONNXMatMulOp>(useOp)?"MatMul":"Gemm", useRank);
+      useOp->dump();
       return false;
     } else {
       for (std::string specified : constantList) {

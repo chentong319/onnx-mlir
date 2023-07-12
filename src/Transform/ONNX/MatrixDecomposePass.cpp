@@ -49,17 +49,34 @@ struct MatrixDecomposePass : public mlir::PassWrapper<MatrixDecomposePass,
                      "2: offline decomposition"),
       llvm::cl::init(1)};
 
+  Option<int> onnxMatrixDecomposeDimThreshold{*this,
+      "onnx-matrix-decompose-dim-threshold",
+      llvm::cl::desc("Specify the minum size of a dimension for a candidate"),
+      llvm::cl::init(128)};
+
+  Option<int> onnxMatrixDecomposeDimSize{*this,
+      "onnx-matrix-decompose-dim-size",
+      llvm::cl::desc(
+          "Specify the size of the new dimension from decomposition"),
+      llvm::cl::init(4)};
+
   MatrixDecomposePass() = default;
   MatrixDecomposePass(const MatrixDecomposePass &pass)
       : mlir::PassWrapper<MatrixDecomposePass, OperationPass<func::FuncOp>>() {
     this->onnxMatrixDecomposeFile = pass.onnxMatrixDecomposeFile;
     this->onnxMatrixDecomposeStage = pass.onnxMatrixDecomposeStage;
+    this->onnxMatrixDecomposeDimSize = pass.onnxMatrixDecomposeDimSize;
+    this->onnxMatrixDecomposeDimThreshold =
+        pass.onnxMatrixDecomposeDimThreshold;
     this->matrixToDecompose = pass.matrixToDecompose;
   }
 
-  MatrixDecomposePass(std::string fileName, int stage) {
+  MatrixDecomposePass(
+      std::string fileName, int stage, int size, int threshold) {
     this->onnxMatrixDecomposeFile = fileName;
     this->onnxMatrixDecomposeStage = stage;
+    this->onnxMatrixDecomposeDimSize = size;
+    this->onnxMatrixDecomposeDimThreshold = threshold;
   }
 
   LogicalResult initialize(MLIRContext *context) override {
@@ -95,14 +112,16 @@ struct MatrixDecomposePass : public mlir::PassWrapper<MatrixDecomposePass,
         .addLegalDialect<ONNXDialect, arith::ArithDialect, func::FuncDialect>();
 
     target.addDynamicallyLegalOp<ONNXConstantOp>([this](ONNXConstantOp op) {
-      return !onnx_mlir::MatrixDecomposePattern::toDecompose(
-          op, matrixToDecompose, onnxMatrixDecomposeStage);
+      return !onnx_mlir::MatrixDecomposePattern::toDecompose(op,
+          matrixToDecompose, onnxMatrixDecomposeStage,
+          onnxMatrixDecomposeDimSize, onnxMatrixDecomposeDimThreshold);
     });
 
     MLIRContext *context = &getContext();
     RewritePatternSet patterns(context);
-    patterns.insert<onnx_mlir::MatrixDecomposePattern>(
-        context, matrixToDecompose, onnxMatrixDecomposeStage);
+    patterns.insert<onnx_mlir::MatrixDecomposePattern>(context,
+        matrixToDecompose, onnxMatrixDecomposeStage, onnxMatrixDecomposeDimSize,
+        onnxMatrixDecomposeDimThreshold);
     if (failed(applyPartialConversion(f, target, std::move(patterns))))
       signalPassFailure();
   }
@@ -121,6 +140,7 @@ std::unique_ptr<mlir::Pass> onnx_mlir::createMatrixDecomposePass() {
 }
 
 std::unique_ptr<mlir::Pass> onnx_mlir::createMatrixDecomposePass(
-    std::string fileName, int stage) {
-  return std::make_unique<MatrixDecomposePass>(fileName, stage);
+    std::string fileName, int stage, int size, int threshold) {
+  return std::make_unique<MatrixDecomposePass>(
+      fileName, stage, size, threshold);
 }

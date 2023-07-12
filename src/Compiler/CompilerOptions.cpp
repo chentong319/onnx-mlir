@@ -288,11 +288,21 @@ llvm::cl::opt<std::string> reportHeapAfter("report-heap-after",
 llvm::cl::opt<int> matrixDecomposeStage("matrix-decompose-stage",
     llvm::cl::desc(
         "Specify what stage for matrix decompose\n"
-        "-1: disable"
-        "0 : candidate detection"
-        "1 : online decompose for accuracy test"
-        "2 : offline decompose for runtime test"),
+        "-1: disable\n"
+        "0 : candidate detection\n"
+        "1 : online decompose for accuracy test\n"
+        "2 : offline decompose for runtime test\n"),
     llvm::cl::init(-1), llvm::cl::cat(OnnxMlirOptions));
+
+llvm::cl::opt<int> matrixDecomposeDimThreshold("matrix-decompose-dim-threshold",
+    llvm::cl::desc(
+        "Specify the minum size of a dimension for a candidate"),
+    llvm::cl::init(64), llvm::cl::cat(OnnxMlirOptions));
+
+llvm::cl::opt<int> matrixDecomposeDimSize("matrix-decompose-dim-size",
+    llvm::cl::desc(
+        "Specify the size of a dimension for decomposition"),
+    llvm::cl::init(4), llvm::cl::cat(OnnxMlirOptions));
 
 llvm::cl::opt<std::string> matrixDecomposeFile("matrix-decompose-file",
     llvm::cl::desc(

@@ -70,7 +70,7 @@ std::unique_ptr<mlir::Pass> createONNXHybridTransformPass();
 /// Decompose Matrix into two matrices
 std::unique_ptr<mlir::Pass> createMatrixDecomposePass();
 std::unique_ptr<mlir::Pass> createMatrixDecomposePass(
-    std::string fileName, int stage);
+    std::string fileName, int stage, int size, int threshold);
 
 /// Pass for analyzing unknown dimension in ONNX operations.
 std::unique_ptr<mlir::Pass> createONNXDimAnalysisPass();

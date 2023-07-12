@@ -25,19 +25,22 @@ class MatrixDecomposePattern
 public:
   using mlir::OpRewritePattern<mlir::ONNXConstantOp>::OpRewritePattern;
 
-  MatrixDecomposePattern(
-      mlir::MLIRContext *context, MatrixDecomposeVectorType table, int stage)
+  MatrixDecomposePattern(mlir::MLIRContext *context,
+      MatrixDecomposeVectorType table, int stage, int dimSize, int dimThreshold)
       : OpRewritePattern<mlir::ONNXConstantOp>(context),
-        matrixToDecompose(table), stage(stage){};
+        matrixToDecompose(table), stage(stage), dimSize(dimSize),
+        dimThreshold(dimThreshold){};
 
   mlir::LogicalResult matchAndRewrite(mlir::ONNXConstantOp ConstantOp,
       mlir::PatternRewriter &rewriter) const override;
 
-  static bool toDecompose(
-      mlir::ONNXConstantOp, MatrixDecomposeVectorType list, int stage);
+  static bool toDecompose(mlir::ONNXConstantOp, MatrixDecomposeVectorType list,
+      int stage, int dimSize, int dimThreshold);
 
   MatrixDecomposeVectorType matrixToDecompose;
   int stage;
+  int dimSize;
+  int dimThreshold;
 };
 
 } // namespace onnx_mlir
