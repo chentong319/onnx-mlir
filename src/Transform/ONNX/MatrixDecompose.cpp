@@ -21,6 +21,41 @@ using namespace mlir;
 
 namespace onnx_mlir {
 
+static Value rewriteGemm(ONNXConstantOp COp, Value C1, Value C2,
+    MultiDialectBuilder<OnnxBuilder> create, int64_t m, int64_t n, int64_t r) {
+  Operation *useOp = *COp->getUsers().begin();
+  ONNXGemmOp gemmOp = cast<ONNXGemmOp>(useOp);
+  if (gemmOp.getTransA() == 1 || gemmOp.getTransB() == 1) {
+    llvm_unreachable("transpose of Gemm is not supported yet");
+  }
+  if (useOp->getOperand(0).getDefiningOp() == COp) {
+    // C is the first input
+    // (C1<m,r>xC2<r,n>)xB<n, k> + C to
+    // C1<m,r>x(C2<r,n>xB<n, k>) + C
+    // Gemm(C1, MatMul(C2, B)), C) if there is no transpose
+
+    Value B = useOp->getOperand(1);
+    int64_t k = getShape(B.getType())[1];
+    Type elementType = getElementType(B.getType());
+    RankedTensorType tyR1 = RankedTensorType::get({r, k}, elementType);
+    auto firstMatMul = create.onnx.matmul(tyR1, C2, B);
+    // There are issue of clone: the rewriter is not used.
+    auto newGemm = create.onnx.gemm(gemmOp->getResultTypes()[0], C1, firstMatMul, gemmOp.getC(), gemmOp.getAlphaAttr(), gemmOp.getBetaAttr(), gemmOp.getTransAAttr(), gemmOp.getTransBAttr());
+    return newGemm;
+  } else {
+    // C is the second input
+    // A<k,m>xC1<m,r>xC2<r,n>
+    // (A<k,m>xC1<m,r>)xC2<r,n>
+    Value A = useOp->getOperand(0);
+    int64_t k = getShape(A.getType())[0];
+    Type elementType = getElementType(A.getType());
+    RankedTensorType tyR1 = RankedTensorType::get({k, r}, elementType);
+    auto firstMatMul = create.onnx.matmul(tyR1, A, C1);
+    auto newGemm = create.onnx.gemm(gemmOp->getResultTypes()[0], firstMatMul, C2, gemmOp.getC(), gemmOp.getAlphaAttr(), gemmOp.getBetaAttr(), gemmOp.getTransAAttr(), gemmOp.getTransBAttr());
+    return newGemm;
+  }
+};
+
 static Value rewriteMatMul(ONNXConstantOp COp, Value C1, Value C2,
     MultiDialectBuilder<OnnxBuilder> create, int64_t m, int64_t n, int64_t r) {
   Operation *useOp = *COp->getUsers().begin();
@@ -123,9 +158,9 @@ LogicalResult MatrixDecomposePattern::matchAndRewrite(
   Value resultVal;
   if (isa<ONNXMatMulOp>(useOp)) {
     resultVal = rewriteMatMul(constantOp, C1, C2, create, m, n, r);
-  } // else if (useOp.isa<ONNXGemmOp>()) {
-    // resultVal = rewriteGemm(constantOp, C1, C2, creat);
-  //}
+  } else if (isa<ONNXGemmOp>(useOp)) {
+    resultVal = rewriteGemm(constantOp, C1, C2, create, m, n, r);
+  }
   else {
     llvm_unreachable("expected");
   }

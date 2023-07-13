@@ -134,6 +134,12 @@ Value OnnxBuilder::matmul(Type Y, Value A, Value B, bool useGemm) const {
   return createOpAndInferShapes<ONNXMatMulOp>(toTensor(Y), aValue, bValue);
 }
 
+Value OnnxBuilder::gemm(Type Y, Value A, Value B, Value C, FloatAttr alpha, FloatAttr beta, IntegerAttr transA, IntegerAttr transB) const {
+  return createOpAndInferShapes<ONNXGemmOp>(Y,
+      toTensor(A), toTensor(B), toTensor(C),
+      alpha, beta, transA, transB);
+}
+
 Value OnnxBuilder::min(ValueRange inputs) const {
   assert(inputs.size() >= 2 && "Expect at least two inputs");
   Type elementType = getElementType(inputs[0].getType());
