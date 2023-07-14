@@ -297,7 +297,7 @@ llvm::cl::opt<int> matrixDecomposeStage("matrix-decompose-stage",
 llvm::cl::opt<int> matrixDecomposeDimThreshold("matrix-decompose-dim-threshold",
     llvm::cl::desc(
         "Specify the minum size of a dimension for a candidate"),
-    llvm::cl::init(64), llvm::cl::cat(OnnxMlirOptions));
+    llvm::cl::init(128), llvm::cl::cat(OnnxMlirOptions));
 
 llvm::cl::opt<int> matrixDecomposeDimSize("matrix-decompose-dim-size",
     llvm::cl::desc(

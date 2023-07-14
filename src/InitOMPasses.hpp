@@ -123,7 +123,8 @@ void initOMPasses(int optLevel) {
   });
 
   mlir::registerPass([]() -> std::unique_ptr<mlir::Pass> {
-    return createMatrixDecomposePass(matrixDecomposeFile, matrixDecomposeStage);
+    return createMatrixDecomposePass(matrixDecomposeFile, matrixDecomposeStage,
+        matrixDecomposeDimSize, matrixDecomposeDimThreshold);
   });
 
 #ifdef ONNX_MLIR_ENABLE_MHLO

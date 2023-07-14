@@ -115,7 +115,7 @@ LogicalResult MatrixDecomposePattern::matchAndRewrite(
 
   Value C1, C2;
   if (stage == 1) { // stage one
-    StringAttr funcNameAttr = rewriter.getStringAttr("DecompseConstant");
+    StringAttr funcNameAttr = rewriter.getStringAttr("DecomposeConstant");
     std::vector<Type> outputTypes({tyC1, tyC2});
     // Create a new constant just with different location
     Value newC =
@@ -182,11 +182,16 @@ bool MatrixDecomposePattern::toDecompose(ONNXConstantOp constantOp,
     return false;
 
   ArrayRef<int64_t> shape = getShape(ty);
-  for (int64_t dim : shape) {
-    if (dim < dimThreshold)
-      return false;
+  // No need to check the size other than in stage 0 to select candidates
+  if (stage == 0) {
+    for (int64_t dim : shape) {
+      if (dim < dimThreshold)
+        return false;
+    }
   }
-  // Check the usage of the constant.
+
+  // Check the usage of the constant to make sure the transformation will
+  // not run into any unexpected situation.
   if (!constantOp->hasOneUse())
     return false;
   Operation *useOp = *constantOp->getUsers().begin();
