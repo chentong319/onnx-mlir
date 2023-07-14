@@ -12,6 +12,7 @@ add_subdirectory(jni)
 # such as z. So we override the default and explicitly compile with -fPIC.
 add_onnx_mlir_library(cruntime STATIC
   OMExternalConstant.c
+  OMDecomposeConstant.c
   OMIndexLookup.c
   OMInstrument.c
   OMRandomNormal.c
@@ -37,6 +38,7 @@ set_target_properties(cruntime
 
 add_onnx_mlir_library(OMTensorUtils
   OMExternalConstant.cpp
+  OMDecomposeConstant.cpp
   OMIndexLookup.cpp
   OMInstrument.cpp
   OMRandomNormal.cpp
