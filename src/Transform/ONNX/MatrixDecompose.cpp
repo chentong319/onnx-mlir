@@ -216,8 +216,7 @@ bool MatrixDecomposePattern::toDecompose(ONNXConstantOp constantOp,
     if (stage == 0) {
       // Scanning mode: print out all the candidate
       printf(
-          "Candiate constant %s %lldx%lld, used by %s %lld\n", name.data(), shape[0], shape[1], isa<ONNXMatMulOp>(useOp)?"MatMul":"Gemm", useRank);
-      useOp->dump();
+          "Candidate constant %s %lldx%lld, used by %s %lld\n", name.data(), shape[0], shape[1], isa<ONNXMatMulOp>(useOp)?"MatMul":"Gemm", useRank);
       return false;
     } else {
       for (std::string specified : constantList) {
