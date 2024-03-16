@@ -102,6 +102,17 @@ Value getLSTMGRUGetY(
   return val;
 }
 
+Value getCompress(
+    Location loc, PatternRewriter &rewriter, Value val) {
+  ONNXCustomOp customOp = rewriter.create<ONNXCustomOp>(loc, val.getType(), val);
+  StringAttr funcNameAttr = rewriter.getStringAttr("CustomizedCompress");
+  customOp->setAttr("function_name", funcNameAttr);
+  StringAttr shapeAttr = rewriter.getStringAttr("SameAs");
+  customOp->setAttr("shape_infer_pattern", shapeAttr);
+
+  return customOp.getResults()[0];
+}
+
 Value getLSTMGRUGetYWithSequenceLens(Location loc, PatternRewriter &rewriter,
     Value val, Value resY, Value sequenceLens, Value initialH) {
 

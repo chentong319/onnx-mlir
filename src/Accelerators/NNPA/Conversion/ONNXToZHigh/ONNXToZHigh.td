@@ -108,6 +108,9 @@ def IsF32ScalarConstantTensor: Constraint<
 def GetScalarF32AttrFromConstant :
         NativeCodeCall<"getScalarF32AttrFromConstant($0)">;
 
+def GetCompressOp :
+        NativeCodeCall<"getCompress($_loc, $_builder, $0)">;
+
 //===----------------------------------------------------------------------===//
 // ONNXReluOp %X = ZHighUnstickOp (ZHighReluOp (ZHighStickOp %X))
 //===----------------------------------------------------------------------===//
@@ -484,11 +487,15 @@ def GetMatMulBiasLayoutStringAttr : NativeCodeCall<
 
 def replaceONNXMatMulPattern : Pat<
   (ONNXMatMulOp:$res $x, $y),
-  (ZHighUnstickOp
-     (ZHighMatMulOp
-        (ZHighStickOp $x, (GetMatMulLayoutStringAttr (GetRank $x))),
-        (ZHighStickOp $y, (GetMatMulLayoutStringAttr (GetRank $y))),
-        (CreateNoneValue)))
+  (GetCompressOp
+     (ZHighUnstickOp
+        (ZHighMatMulOp
+           (ZHighStickOp (GetCompressOp $x), (GetMatMulLayoutStringAttr (GetRank $x))),
+           (ZHighStickOp $y, (GetMatMulLayoutStringAttr (GetRank $y))),
+           (CreateNoneValue)
+        )
+     )
+  )
 >;
 
 //===----------------------------------------------------------------------===//
