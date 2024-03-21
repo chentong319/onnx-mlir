@@ -57,6 +57,9 @@ std::unique_ptr<mlir::Pass> createInstrumentPass();
 std::unique_ptr<mlir::Pass> createInstrumentPass(
     const std::string &ops, unsigned actions);
 
+/// Pass to insert compress op
+std::unique_ptr<mlir::Pass> createONNXInsertCompressPass();
+
 /// Passes for instrumenting the ONNX ops to print their operand type
 /// signatures at runtime.
 std::unique_ptr<mlir::Pass> createInstrumentONNXSignaturePass();

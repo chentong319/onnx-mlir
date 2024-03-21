@@ -13,6 +13,7 @@ add_subdirectory(python)
 # such static library in a shared library can cause runtime failure on some architectures,
 # such as z. So we override the default and explicitly compile with -fPIC.
 add_onnx_mlir_library(cruntime STATIC
+  OMCustomizedCompress.c
   OMExternalConstant.c
   OMIndexLookup.c
   OMInstrument.c
@@ -40,6 +41,7 @@ set_target_properties(cruntime
   )
 
 add_onnx_mlir_library(OMTensorUtils
+  OMCustomizedCompress.cpp
   OMExternalConstant.cpp
   OMIndexLookup.cpp
   OMInstrument.cpp

@@ -80,6 +80,7 @@ add_onnx_mlir_library(OMHybridTransform
 
 add_onnx_mlir_library(OMONNXPreKrnlVerifyONNX
   ONNXPreKrnlVerifyPass.cpp
+  ONNXInsertCompress.cpp
 
   LINK_LIBS PUBLIC
   OMONNXOps
