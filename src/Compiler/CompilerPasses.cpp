@@ -137,7 +137,8 @@ void addONNXToMLIRPasses(mlir::PassManager &pm, bool targetCPU) {
   // Set onnx_node_name if it is missing. Keep this pass at the end of this
   // function and just before instrumentation.
   pm.addPass(createSetONNXNodeNamePass());
-  pm.addPass(onnx_mlir::createONNXInsertCompressPass());
+  if (enableCustomizedCompress)
+    pm.addPass(onnx_mlir::createONNXInsertCompressPass());
 
   // Add instrumentation for Onnx Ops
   // Keep this pass at the end of this function.
