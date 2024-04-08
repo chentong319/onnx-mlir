@@ -18,13 +18,13 @@
 #include "src/Runtime/OMTensorHelper.hpp"
 #endif
 
-#define COMPRESS_SCHEME 0
+#define COMPRESS_SCHEME 2
 
 void omCustomizedCompressFloat(OMTensor *outputTensor, OMTensor *inputTensor) {
   const OM_DATA_TYPE dataType = omTensorGetDataType(inputTensor);
 
   if (dataType == ONNX_TYPE_FLOAT) {
-   float *inputPtr = (float *)omTensorGetDataPtr(inputTensor);
+    float *inputPtr = (float *)omTensorGetDataPtr(inputTensor);
     float *outputPtr = (float *)omTensorGetDataPtr(outputTensor);
     for(uint i = 0; i < omTensorGetNumElems(inputTensor); i ++) {
       unsigned int *pi = (unsigned int*) &inputPtr[i];
@@ -52,11 +52,23 @@ void omCustomizedCompressFloat(OMTensor *outputTensor, OMTensor *inputTensor) {
 #error COMPRESS_SCHEME is not defined or handled
 #endif
 // Write to output
-      outputPtr[i] = (s<<31) | (e<<23) | m;
-} // end loop
+      unsigned int *po = (unsigned int *) outputPtr+i;
+      *po = (s<<31) | (e<<23) | m;
+    } // end loop
+
+// CHECK correctness
+  #if (COMPRESS_SCHEME == 0) 
+/*
+    for(uint i = 0; i < omTensorGetNumElems(inputTensor); i ++) {
+      printf("%f %f\n", inputPtr[i], outputPtr[i]);
+    }
+*/
+  #endif
   } else {
     assert(0 && "unsupported type");
   }
+
+  
   return;
 }
 
