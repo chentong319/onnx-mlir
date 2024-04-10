@@ -58,14 +58,27 @@ void ONNXInsertCompressPass::runOnOperation() {
       return WalkResult::advance();
     }
 
-    //if (op->getResults().size() != 1)
-      //return WalkResult::advance();
+    if (isa<ONNXCastOp, ONNXConstantOp>(op)) {
+      return WalkResult::advance();
+    }
 
+    if (!isa<ONNXSoftmaxOp, ONNXLayerNormalizationOp, ONNXMatMulOp, ONNXGemmOp, ONNXMulOp, ONNXAddOp, ONNXDivOp, ONNXSubOp, ONNXTanhOp>(op)) {
+      //return WalkResult::advance();
+    }
+
+    if (!isa<ONNXErfOp>(op)) {
+      return WalkResult::advance();
+    }
 
     OpBuilder builder(op);
     builder.setInsertionPointAfter(op);
     // Compress the input, if not compressed
     
+    StringAttr nodeName = op->getAttrOfType<mlir::StringAttr>("onnx_node_name");
+    if(!nodeName || nodeName.getValue().empty()) {
+      nodeName = builder.getStringAttr("unknownOp");
+    }
+      
     // Compress the output
     for(Value result :  op->getResults()) {
       if (getElementType(result.getType()).isa<FloatType>()) {
@@ -74,6 +87,7 @@ void ONNXInsertCompressPass::runOnOperation() {
         compressOp->setAttr("function_name", funcNameAttr);
         StringAttr shapeAttr = builder.getStringAttr("SameAs");
         compressOp->setAttr("shape_infer_pattern", shapeAttr);
+        compressOp->setAttr("source_op", nodeName);
         result.replaceAllUsesExcept(compressOp.getResult(0), compressOp);
      }
     }
