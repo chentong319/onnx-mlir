@@ -18,23 +18,70 @@
 #include "src/Runtime/OMTensorHelper.hpp"
 #endif
 
-#define DEFAULT_SCHEME 0
+#define DEFAULT_SCHEME 1
+#define DEFAULT_MBITS 0
+#define DEFAULT_EBITS 0
+
+static unsigned int  compress_matissa(unsigned int m, int nbits) {
+  if (nbits == 0)
+    return m;
+
+  unsigned int mask=1;
+  for (int i=1; i < nbits ; i++) {
+    mask = mask<<1 | 0x1 ;
+  }
+
+  mask = mask << (23-nbits);
+  //printf("%u\n", mask);
+
+  unsigned newm = m & mask; // get first nbits.
+  newm = (0x1 << (23-nbits-1)) | newm; // attach a 1 to reduce the roundup error
+  return newm;
+}
+
+static unsigned int compress_exponent(unsigned int e, int nbits) {
+#define EBITS 8
+  if (nbits == 0)
+    return e;
+  if (nbits == 1 || nbits > EBITS)
+    assert(0 && "nbit value is incorrect");
+
+  unsigned int half = 1;
+  half = half << (EBITS-1);
+  half -= 1;
+
+  unsigned clipbound = (1<< (nbits-1));
+  unsigned int newe = e;
+  if (e > half + clipbound)
+    newe = half+clipbound-1;
+  else if (e < half - clipbound)
+    newe = half-clipbound;
+
+  return newe;
+}
+
 
 void omCustomizedCompressFloat(OMTensor *outputTensor, OMTensor *inputTensor, char *op_name) {
   const OM_DATA_TYPE dataType = omTensorGetDataType(inputTensor);
-  static int scheme = DEFAULT_SCHEME;
   static bool isFirst = true;
+  static int scheme = DEFAULT_SCHEME;
+  static int mbits = DEFAULT_MBITS;
+  static int ebits = DEFAULT_EBITS;
   if (isFirst == true) {
     char *scheme_str;
     if ((scheme_str = getenv("COMPRESS_SCHEME"))) {
-      if (strncmp(scheme_str, "1", 1) == 0){
-        scheme = 1;
-      } else if (strncmp(scheme_str, "2", 1) == 0){
-        scheme = 2;
-      }
+      sscanf(scheme_str, "%d", &scheme);
+    }
+    char *mbits_str;
+    if ((mbits_str = getenv("COMPRESS_MBITS"))) {
+      sscanf(mbits_str, "%d", &mbits);
+    }
+    char *ebits_str;
+    if ((ebits_str = getenv("COMPRESS_EBITS"))) {
+      sscanf(ebits_str, "%d", &ebits);
     }
     isFirst = false;
-    printf("customized compress scheme %d\n", scheme);
+    printf("customized compress config: scheme %d, mbits %d ebits %d\n", scheme, mbits, ebits);
   }
 
   if (getenv("COMPRESS_DEBUG")) {
@@ -57,12 +104,13 @@ void omCustomizedCompressFloat(OMTensor *outputTensor, OMTensor *inputTensor, ch
 
       } else if (scheme == 1) {
         // Only drop bits in matissa
-        m &= 0x00700000;
+        m = compress_matissa(m, mbits);
+        e = compress_exponent(e, ebits);
       } else if (scheme == 2) {
         // Keep 3 bits for matissa and 5 bits for exponent
         // Clip the exponent to 127-16 to 127+15
 #define MYE 16
-        m &= 0x00700000;
+        m = compress_matissa(m, mbits);
         if (e < 127-MYE) e = 127-MYE;
         if (e > 127+MYE) e = 127+MYE-1;
       } else {

@@ -58,16 +58,17 @@ void ONNXInsertCompressPass::runOnOperation() {
       return WalkResult::advance();
     }
 
-    if (isa<ONNXCastOp, ONNXConstantOp>(op)) {
-      return WalkResult::advance();
+    if (!isa<ONNXConstantOp>(op)) {
+      //return WalkResult::advance();
     }
 
     if (!isa<ONNXSoftmaxOp, ONNXLayerNormalizationOp, ONNXMatMulOp, ONNXGemmOp, ONNXMulOp, ONNXAddOp, ONNXDivOp, ONNXSubOp, ONNXTanhOp>(op)) {
       //return WalkResult::advance();
     }
 
-    if (!isa<ONNXErfOp>(op)) {
-      return WalkResult::advance();
+    // Exclude Erf because it changes the result dramatically
+    if (isa<ONNXErfOp>(op)) {
+      //return WalkResult::advance();
     }
 
     OpBuilder builder(op);
@@ -76,12 +77,21 @@ void ONNXInsertCompressPass::runOnOperation() {
     
     StringAttr nodeName = op->getAttrOfType<mlir::StringAttr>("onnx_node_name");
     if(!nodeName || nodeName.getValue().empty()) {
-      nodeName = builder.getStringAttr("unknownOp");
-    }
+      nodeName = builder.getStringAttr("unknownOp"); }
       
     // Compress the output
     for(Value result :  op->getResults()) {
       if (getElementType(result.getType()).isa<FloatType>()) {
+        // do not compress if the result is used by ONNXReturnOp
+        bool usedByReturn = false;
+        for(Operation *userOp : op->getUsers()) {
+          if (isa<ONNXReturnOp, func::ReturnOp>(userOp)) {
+            usedByReturn = true;
+            break;
+          }
+        } 
+        if (usedByReturn)
+          break;
         ONNXCustomOp compressOp = builder.create<ONNXCustomOp>(op->getLoc(), result.getType(), result);
         StringAttr funcNameAttr = builder.getStringAttr("omCustomizedCompressFloat");
         compressOp->setAttr("function_name", funcNameAttr);
