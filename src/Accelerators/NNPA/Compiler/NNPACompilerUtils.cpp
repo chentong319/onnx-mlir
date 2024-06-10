@@ -13,6 +13,7 @@
 //===----------------------------------------------------------------------===//
 
 #include "mlir/Conversion/AffineToStandard/AffineToStandard.h"
+#include "mlir/Conversion/Passes.h"
 #include "mlir/Conversion/ReconcileUnrealizedCasts/ReconcileUnrealizedCasts.h"
 #include "mlir/Conversion/SCFToControlFlow/SCFToControlFlow.h"
 #include "mlir/Conversion/VectorToSCF/VectorToSCF.h"
@@ -44,6 +45,10 @@ using namespace mlir;
 using namespace onnx_mlir;
 
 namespace onnx_mlir {
+
+void configurePassesNNPA() {
+  configureOnnxToZHighLoweringPass(optReport == OptReport::NNPAUnsupportedOps);
+}
 
 void addONNXToZHighPasses(mlir::PassManager &pm) {
   for (unsigned i = 0; i < 3; i++) {
@@ -127,11 +132,14 @@ void addONNXToZHighPasses(mlir::PassManager &pm) {
         onnx_mlir::zhigh::createZHighConstPropagationPass());
 
   // Experimental feature: Decompose stick/unstick into two phases: layout
-  // transform and data conversion.
+  // transform and data conversion. Do some optimizations after decomposing.
+  // Then, recompose again layout and data conversion if they are not optimized.
   if (nnpaEnableZHighDecomposeStickUnstick) {
     pm.addNestedPass<func::FuncOp>(
         onnx_mlir::zhigh::createZHighDecomposeStickUnstickPass());
     pm.addPass(mlir::createCanonicalizerPass());
+    pm.addNestedPass<func::FuncOp>(
+        onnx_mlir::zhigh::createZHighRecomposeToStickUnstickPass());
   }
 
   // Remove common sub-expressions.
@@ -176,6 +184,7 @@ void addPassesNNPA(mlir::OwningOpRef<mlir::ModuleOp> &module,
 
   // Override pass configurations.
   configurePasses();
+  configurePassesNNPA();
 
   // LLVM_DEBUG(llvm::dbgs() << "Adding NNPA passes" << std::endl;);
   if (emissionTarget >= EmitONNXIR) {
@@ -215,6 +224,10 @@ void addPassesNNPA(mlir::OwningOpRef<mlir::ModuleOp> &module,
         addKrnlToAffinePasses(pm);
         // Optimizations at ZLow that needs affine map in MemRef.
         pm.addPass(zlow::createZLowRewritePass());
+        // Late generation of code for stick/unstick, needed to be after a
+        // ZLowRewrite pass.
+        if (nnpaEnableCompilerStickUnstick)
+          pm.addPass(zlow::createZLowStickExpansionPass(enableParallel));
         pm.addPass(mlir::createCanonicalizerPass());
         // Normalize MemRefs.
         normalizeMemRefsPasses(pm);
@@ -223,6 +236,11 @@ void addPassesNNPA(mlir::OwningOpRef<mlir::ModuleOp> &module,
         addKrnlToAffinePasses(pm);
         // Optimizations at ZLow after normalizing MemRefs.
         pm.addPass(zlow::createZLowRewritePass());
+        // The createZLowStickExpansion pass may create parallel constructs,
+        // they need to be handled here.
+        if (nnpaEnableCompilerStickUnstick && enableParallel)
+          pm.addPass(mlir::createConvertSCFToOpenMPPass());
+
         pm.addPass(mlir::createCanonicalizerPass());
         // Constant folding for std.alloc.
         pm.addNestedPass<func::FuncOp>(onnx_mlir::createFoldStdAllocPass());

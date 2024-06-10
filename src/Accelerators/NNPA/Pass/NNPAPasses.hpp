@@ -29,6 +29,7 @@ std::unique_ptr<mlir::Pass> createDevicePlacementPass(
 
 /// Add pass for lowering ONNX ops to ZHigh ops.
 std::unique_ptr<mlir::Pass> createONNXToZHighPass();
+void configureOnnxToZHighLoweringPass(bool reportOnNNPAUnsupportedOps);
 
 /// Add pass for rewriting ONNX ops for ZHigh.
 std::unique_ptr<mlir::Pass> createRewriteONNXForZHighPass();
@@ -53,12 +54,18 @@ std::unique_ptr<mlir::Pass> createZHighClipToDLFloatPass();
 /// Pass for decomposing stick/unstick at ZHighIR.
 std::unique_ptr<mlir::Pass> createZHighDecomposeStickUnstickPass();
 
+/// Pass for recomposing ops back to stick/unstick at ZHighIR.
+std::unique_ptr<mlir::Pass> createZHighRecomposeToStickUnstickPass();
 } // end namespace zhigh
 
 namespace zlow {
 
 /// Add pass for rewriting ZLow ops.
 std::unique_ptr<mlir::Pass> createZLowRewritePass();
+
+/// Add pass for rewriting ZLow ops.
+std::unique_ptr<mlir::Pass> createZLowStickExpansionPass(
+    bool enableParallel = false);
 
 /// Add pass for rewriting ZLow ops.
 std::unique_ptr<mlir::Pass> createZLowDummyOpForMultiDerefPass();
