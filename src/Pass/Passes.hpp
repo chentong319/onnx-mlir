@@ -121,4 +121,8 @@ std::unique_ptr<mlir::Pass> createConvertKrnlToLLVMPass(bool verifyInputTensors,
 /// Pass for lowering Onnx ops to TOSA dialect
 std::unique_ptr<mlir::Pass> createConvertONNXToTOSAPass();
 
+/// Pass to generate computation description for HISIM
+std::unique_ptr<mlir::Pass> createGenerateHISIMComputationPass();
+
+
 } // namespace onnx_mlir

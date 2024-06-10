@@ -11,6 +11,8 @@
 #include "mlir/IR/DialectRegistry.h"
 #include "llvm/ADT/ArrayRef.h"
 
+#include "src/Dialect/ONNX/Transforms/HISIMOpComputation.hpp"
+
 namespace onnx_mlir {
 
 // Adds the mlir and onnx-mlir dialects needed to compile end to end.

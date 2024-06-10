@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 
-//===- HISIMOpInterface.td - HISIMOp Interface -*- tablegen -===//
+//===- HISIMComputationInterface.td - HISIMComputation Interface -*- tablegen -===//
 //
 // Copyright 2024 The IBM Research Authors.
 //
@@ -19,7 +19,7 @@
 include "mlir/IR/OpBase.td"
 #endif // OP_BASE
 
-def HISIMOpOpInterface : OpInterface<"HISIMOpOpInterface"> {
+def HISIMComputationOpInterface : OpInterface<"HISIMComputationOpInterface"> {
   let description = [{
     Interface to create the information of this Op which is needed by HISIM
     simulator. For example, the computation and/or communication requirement
