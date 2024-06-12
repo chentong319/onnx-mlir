@@ -24,11 +24,17 @@ struct GenerateHISIMComputationPass
 } // namespace
 
 void GenerateHISIMComputationPass::runOnOperation() {
+  FILE *fp = fopen("hisim_model.csv", "w");
   getOperation()->walk([&](HISIMComputationOpInterface hisimOp) {
     //OpBuilder builder(getOperation()->getContext());
     //builder.setInsertionPoint(verifiableOp);
-    hisimOp.HISIMComputation();
+    std::vector<int> res = hisimOp.HISIMComputation();
+    for (unsigned long  index = 0; index < res.size()-1; index++) {
+      fprintf(fp, "%d,", res[index]);
+    }
+    fprintf(fp, "%d\n", res[res.size()-1]);
   });
+  fclose(fp);
 }
 
 std::unique_ptr<Pass> onnx_mlir::createGenerateHISIMComputationPass() {
