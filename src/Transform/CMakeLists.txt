@@ -46,5 +46,6 @@ add_onnx_mlir_library(OMHISIMComputation
   OMKrnlOps
   MLIRPass
   OMOptionUtils
+  OMHISIMOpInterface
   )
 
