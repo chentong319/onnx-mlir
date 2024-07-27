@@ -82,10 +82,72 @@ struct ConvOpInterface
   }
 };
 
+std::vector<int> elementwiseHISIMComputation(Operation *op) {
+  auto X = op->getOperands()[0];
+  auto XType = X.getType();
+  if (!onnx_mlir::hasStaticShape(XType)) {
+    op->dump();
+    return {32,32,16,3,3,16,0,1,1};
+  }
+  llvm::ArrayRef<int64_t> XShape = onnx_mlir::getShape(XType);
+  if (XShape.size() != 4) {
+    op->dump();
+    return {32,32,16,3,3,16,0,1,1};
+  }
+  std::vector<int> res;
+    
+  res.push_back(XShape[2]); //IFM_Size_X
+  res.push_back(XShape[3]); // IFM_Size_y
+  res.push_back(XShape[1]); // N_IFM
+
+  res.push_back(1); // Kx
+  res.push_back(1); // Ky
+  res.push_back(XShape[1]); // NOFM
+
+  res.push_back(1);
+
+  // Sparsity
+  res.push_back(1);
+
+  return res;
+}
+
+struct AddOpInterface
+    : public HISIMComputationOpInterface::ExternalModel<AddOpInterface, ONNXAddOp> {
+  std::vector<int>  HISIMComputation(Operation *op) const {
+    return elementwiseHISIMComputation(op);
+  }
+};
+
+struct MaxPoolOpInterface
+    : public HISIMComputationOpInterface::ExternalModel<MaxPoolOpInterface, ONNXMaxPoolOp> {
+  std::vector<int>  HISIMComputation(Operation *op) const {
+    return elementwiseHISIMComputation(op);
+  }
+};
+
+struct MaxPoolSingleOutOpInterface
+    : public HISIMComputationOpInterface::ExternalModel<MaxPoolSingleOutOpInterface, ONNXMaxPoolSingleOutOp> {
+  std::vector<int>  HISIMComputation(Operation *op) const {
+    return elementwiseHISIMComputation(op);
+  }
+};
+
+struct ReluOpInterface
+    : public HISIMComputationOpInterface::ExternalModel<ReluOpInterface, ONNXReluOp> {
+  std::vector<int>  HISIMComputation(Operation *op) const {
+    return elementwiseHISIMComputation(op);
+  }
+};
+
 void mlir::registerHISIMComputationOpInterfaceExternalModels(
     DialectRegistry &registry) {
   registry.addExtension(+[](MLIRContext *ctx, mlir::ONNXDialect *dialect) {
     ONNXConvOp::attachInterface<ConvOpInterface>(*ctx);
+    ONNXReluOp::attachInterface<ReluOpInterface>(*ctx);
+    //ONNXAddOp::attachInterface<AddOpInterface>(*ctx);
+    ONNXMaxPoolOp::attachInterface<MaxPoolOpInterface>(*ctx);
+    ONNXMaxPoolSingleOutOp::attachInterface<MaxPoolSingleOutOpInterface>(*ctx);
         // Load additional dialects of which ops may get created.
     ctx->loadDialect<ONNXDialect>();
   });    
