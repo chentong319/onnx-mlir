@@ -21,9 +21,9 @@
 #include <sstream>
 #include <vector>
 
-#include "llvm/ADT/SmallString.h"
-#include "llvm/Support/ManagedStatic.h"
-#include "llvm/Support/Path.h"
+//x #include "llvm/ADT/SmallString.h"
+//x #include "llvm/Support/ManagedStatic.h"
+//x #include "llvm/Support/Path.h"
 
 #include "ExecutionSession.hpp"
 #include "OMTensorListHelper.hpp"
@@ -44,16 +44,20 @@ void ExecutionSession::Init(
 
   // If there is no tag, use the model filename without extension as a tag.
   if (tag == "") {
+#if 0
     std::string fname = llvm::sys::path::filename(sharedLibPath).str();
     llvm::SmallString<256> fnameWithoutExt(fname);
     llvm::sys::path::replace_extension(fnameWithoutExt, "");
     tag = fnameWithoutExt.str().lower();
+#endif
   }
 
   // tag = "NONE" to use functions without tag.
   std::string lowDashTag;
+#if 0
   if (!llvm::StringRef(tag).equals_insensitive("NONE"))
     lowDashTag = "_" + tag;
+#endif
 
 #if defined(_WIN32)
   // Use functions without tags on Windows since we cannot define at compile
@@ -63,6 +67,7 @@ void ExecutionSession::Init(
 #endif
 
   // Init symbols used by execution session.
+#if 0 //Tong
   _sharedLibraryHandle =
       llvm::sys::DynamicLibrary::getLibrary(sharedLibPath.c_str());
   if (!_sharedLibraryHandle.isValid())
@@ -102,6 +107,7 @@ void ExecutionSession::Init(
     setenv("OM_CONSTANT_PATH", basePath.c_str(), /*overwrite=*/0);
 #endif
   }
+#endif
 
   // Successful completion of initialization.
   isInitialized = true;
@@ -114,8 +120,10 @@ void ExecutionSession::Init(
 }
 
 ExecutionSession::~ExecutionSession() {
+#if 0 //Tong
   if (_sharedLibraryHandle.isValid())
     llvm::sys::DynamicLibrary::closeLibrary(_sharedLibraryHandle);
+#endif
 }
 
 // =============================================================================
@@ -132,12 +140,14 @@ const std::string *ExecutionSession::queryEntryPoints(
 void ExecutionSession::setEntryPoint(const std::string &entryPointName) {
   if (!isInitialized)
     throw std::runtime_error(reportInitError());
+#if 0 //Tong
   _entryPointFunc = reinterpret_cast<entryPointFuncType>(
       _sharedLibraryHandle.getAddressOfSymbol(entryPointName.c_str()));
   if (!_entryPointFunc)
     throw std::runtime_error(reportSymbolLoadingError(entryPointName));
   _entryPointName = entryPointName;
   errno = 0; // No errors.
+#endif
 }
 
 const std::string ExecutionSession::inputSignature() const {

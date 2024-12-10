@@ -1,8 +1,8 @@
 
 # SPDX-License-Identifier: Apache-2.0
 
-add_subdirectory(jni)
-add_subdirectory(omp)
+#add_subdirectory(jni)
+#add_subdirectory(omp)
 add_subdirectory(python)
 
 # TODO: should add for each accelerator its subdirectory that implements InitAccel##name
@@ -12,32 +12,6 @@ add_subdirectory(python)
 # However, by default object code for static library is not compiled with -fPIC. Embedding
 # such static library in a shared library can cause runtime failure on some architectures,
 # such as z. So we override the default and explicitly compile with -fPIC.
-add_onnx_mlir_library(cruntime STATIC
-  OMExternalConstant.c
-  OMIndexLookup.c
-  OMInstrument.c
-  OMRandomNormal.c
-  OMResize.c
-  OMSort.c
-  OMTensor.c
-  OMTensorList.c
-  OMUnique.c
-  OnnxDataType.c
-  ${ONNX_MLIR_SRC_ROOT}/src/Support/SmallFPConversion.c
-
-  DEPENDS
-  AcceleratorsInc
-
-  EXCLUDE_FROM_OM_LIBS
-
-  INCLUDE_DIRS PRIVATE
-  ${ONNX_MLIR_SRC_ROOT}/include
-  )
-set_target_properties(cruntime
-  PROPERTIES
-  LANGUAGE C
-  POSITION_INDEPENDENT_CODE TRUE
-  )
 
 add_onnx_mlir_library(OMTensorUtils
   OMExternalConstant.cpp
@@ -50,10 +24,10 @@ add_onnx_mlir_library(OMTensorUtils
   OMTensorList.cpp
   OMUnique.cpp
   OnnxDataType.cpp
-  ${ONNX_MLIR_SRC_ROOT}/src/Support/SmallFPConversion.c
+#  ${ONNX_MLIR_SRC_ROOT}/src/Support/SmallFPConversion.c
 
-  DEPENDS 
-  AcceleratorsInc
+#  DEPENDS 
+#  AcceleratorsInc
 
   EXCLUDE_FROM_OM_LIBS
 
@@ -72,7 +46,7 @@ add_onnx_mlir_library(OMExecutionSession
 
   LINK_LIBS PUBLIC
   OMTensorUtils
-  LLVMSupport
+  #LLVMSupport
   )
 set_target_properties(OMExecutionSession
   PROPERTIES

@@ -13,7 +13,7 @@
 //
 //===----------------------------------------------------------------------===//
 
-#include "src/Support/SmallFP.hpp"
+//x#include "src/Support/SmallFP.hpp"
 #include "src/Support/SuppressWarnings.h"
 
 SUPPRESS_WARNINGS_PUSH
@@ -30,6 +30,8 @@ namespace detail {
 // Ref: https://github.com/pybind/pybind11/issues/1776
 //
 // This implementation is copied from https://github.com/PaddlePaddle/Paddle
+
+#if 0 //Tong
 template <>
 struct npy_format_descriptor<onnx_mlir::float_16> {
   static py::dtype dtype() {
@@ -48,6 +50,7 @@ struct npy_format_descriptor<onnx_mlir::float_16> {
   }
   static constexpr auto name = _("float16");
 };
+#endif
 
 } // namespace detail
 } // namespace pybind11
@@ -171,8 +174,8 @@ std::vector<py::array> PyExecutionSessionBase::pyRun(
     // string type missing
     else if (py::isinstance<py::array_t<bool>>(inputPyArray))
       dtype = ONNX_TYPE_BOOL;
-    else if (py::isinstance<py::array_t<float_16>>(inputPyArray))
-      dtype = ONNX_TYPE_FLOAT16;
+    //x else if (py::isinstance<py::array_t<float_16>>(inputPyArray))
+     //x dtype = ONNX_TYPE_FLOAT16;
     else if (py::isinstance<py::array_t<double>>(inputPyArray))
       dtype = ONNX_TYPE_DOUBLE;
     else if (py::isinstance<py::array_t<std::uint32_t>>(inputPyArray))
