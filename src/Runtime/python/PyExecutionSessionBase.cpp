@@ -14,11 +14,11 @@
 //===----------------------------------------------------------------------===//
 
 //x#include "src/Support/SmallFP.hpp"
-#include "src/Support/SuppressWarnings.h"
+//x#include "src/Support/SuppressWarnings.h"
 
-SUPPRESS_WARNINGS_PUSH
+//xSUPPRESS_WARNINGS_PUSH
 #include "onnx/onnx_pb.h"
-SUPPRESS_WARNINGS_POP
+//xSUPPRESS_WARNINGS_POP
 
 #include "PyExecutionSessionBase.hpp"
 
@@ -32,6 +32,7 @@ namespace detail {
 // This implementation is copied from https://github.com/PaddlePaddle/Paddle
 
 #if 0 //Tong
+// onnx_mlir::float_16 is not defined yet
 template <>
 struct npy_format_descriptor<onnx_mlir::float_16> {
   static py::dtype dtype() {
@@ -201,6 +202,7 @@ std::vector<py::array> PyExecutionSessionBase::pyRun(
       if (tensorBuffer == NULL)
         throw std::runtime_error(reportPythonError(
             "fail to allocate Tensor buffer for string data"));
+
       inputOMTensor = omTensorCreateWithOwnership(
           tensorBuffer, shape, ndim, dtype, /*own_data=*/true);
 
@@ -295,6 +297,8 @@ std::vector<py::array> PyExecutionSessionBase::pyRun(
   }
   omTensorListDestroy(wrappedOutput);
   omTensorListDestroy(wrappedInput);
+#if 0
+#endif
 
   return outputPyArrays;
 }

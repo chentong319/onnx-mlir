@@ -32,12 +32,14 @@ PYBIND11_MODULE(PyRuntimeC, m) {
       .def(py::init<const std::string &, const std::string &, const bool>(),
           py::arg("shared_lib_path"), py::arg("tag") = "",
           py::arg("use_default_entry_point") = 1)
+#if 1
       .def("entry_points", &onnx_mlir::PyExecutionSession::pyQueryEntryPoints)
       .def("set_entry_point", &onnx_mlir::PyExecutionSession::pySetEntryPoint,
           py::arg("name"))
       .def("run", &onnx_mlir::PyExecutionSession::pyRun, py::arg("input"),
           py::arg("shape"), py::arg("stride"))
       .def("input_signature", &onnx_mlir::PyExecutionSession::pyInputSignature)
+#endif
       .def("output_signature",
           &onnx_mlir::PyExecutionSession::pyOutputSignature);
 }

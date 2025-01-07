@@ -15,6 +15,7 @@
 
 #include <errno.h>
 #include <string.h>
+#include <dlfcn.h>
 
 #include <iostream>
 #include <memory>
@@ -44,6 +45,7 @@ void ExecutionSession::Init(
 
   // If there is no tag, use the model filename without extension as a tag.
   if (tag == "") {
+    // ToFix: llvm utilities. But in normal usage, tag is NONE
 #if 0
     std::string fname = llvm::sys::path::filename(sharedLibPath).str();
     llvm::SmallString<256> fnameWithoutExt(fname);
@@ -55,6 +57,7 @@ void ExecutionSession::Init(
   // tag = "NONE" to use functions without tag.
   std::string lowDashTag;
 #if 0
+  // Assume tag is always NONE
   if (!llvm::StringRef(tag).equals_insensitive("NONE"))
     lowDashTag = "_" + tag;
 #endif
@@ -67,32 +70,54 @@ void ExecutionSession::Init(
 #endif
 
   // Init symbols used by execution session.
-#if 0 //Tong
+#ifdef USE_LLVM
   _sharedLibraryHandle =
       llvm::sys::DynamicLibrary::getLibrary(sharedLibPath.c_str());
   if (!_sharedLibraryHandle.isValid())
     throw std::runtime_error(reportLibraryOpeningError(sharedLibPath));
+#else
+  // Copy code from llvm/lib/Support/DynamicLibrary.cpp, especially the flags
+  _sharedLibraryHandle = dlopen(sharedLibPath.c_str(), RTLD_LAZY | RTLD_GLOBAL);
+  if (!_sharedLibraryHandle)
+    throw std::runtime_error(reportLibraryOpeningError(sharedLibPath));
+#endif
 
   std::string queryEntryPointsNameWithTag = _queryEntryPointsName + lowDashTag;
+#ifdef USE_LLVM
   _queryEntryPointsFunc = reinterpret_cast<queryEntryPointsFuncType>(
       _sharedLibraryHandle.getAddressOfSymbol(
           queryEntryPointsNameWithTag.c_str()));
+#else
+  _queryEntryPointsFunc = reinterpret_cast<queryEntryPointsFuncType>(
+     dlsym(_sharedLibraryHandle, queryEntryPointsNameWithTag.c_str()));
+#endif
+
   if (!_queryEntryPointsFunc)
     throw std::runtime_error(
         reportSymbolLoadingError(queryEntryPointsNameWithTag));
 
   std::string inputSignatureNameWithTag = _inputSignatureName + lowDashTag;
+#ifdef USE_LLVM
   _inputSignatureFunc = reinterpret_cast<signatureFuncType>(
       _sharedLibraryHandle.getAddressOfSymbol(
           inputSignatureNameWithTag.c_str()));
+#else
+  _inputSignatureFunc = reinterpret_cast<signatureFuncType>(
+      dlsym(_sharedLibraryHandle, inputSignatureNameWithTag.c_str()));
+#endif
   if (!_inputSignatureFunc)
     throw std::runtime_error(
         reportSymbolLoadingError(inputSignatureNameWithTag));
 
   std::string outputSignatureNameWithTag = _outputSignatureName + lowDashTag;
+#ifdef USE_LLVM
   _outputSignatureFunc = reinterpret_cast<signatureFuncType>(
       _sharedLibraryHandle.getAddressOfSymbol(
           outputSignatureNameWithTag.c_str()));
+#else
+  _outputSignatureFunc = reinterpret_cast<signatureFuncType>(
+      dlsym(_sharedLibraryHandle, outputSignatureNameWithTag.c_str()));
+#endif
   if (!_outputSignatureFunc)
     throw std::runtime_error(
         reportSymbolLoadingError(outputSignatureNameWithTag));
@@ -107,7 +132,8 @@ void ExecutionSession::Init(
     setenv("OM_CONSTANT_PATH", basePath.c_str(), /*overwrite=*/0);
 #endif
   }
-#endif
+#if 0 //Tong
+#endif //end tong
 
   // Successful completion of initialization.
   isInitialized = true;
@@ -120,9 +146,12 @@ void ExecutionSession::Init(
 }
 
 ExecutionSession::~ExecutionSession() {
-#if 0 //Tong
+#ifdef USE_LLVM 
   if (_sharedLibraryHandle.isValid())
     llvm::sys::DynamicLibrary::closeLibrary(_sharedLibraryHandle);
+#else
+  if (!_sharedLibraryHandle)
+    dlclose(_sharedLibraryHandle);
 #endif
 }
 
@@ -140,14 +169,17 @@ const std::string *ExecutionSession::queryEntryPoints(
 void ExecutionSession::setEntryPoint(const std::string &entryPointName) {
   if (!isInitialized)
     throw std::runtime_error(reportInitError());
-#if 0 //Tong
+#ifdef USE_LLVM 
   _entryPointFunc = reinterpret_cast<entryPointFuncType>(
       _sharedLibraryHandle.getAddressOfSymbol(entryPointName.c_str()));
+#else
+  _entryPointFunc = reinterpret_cast<entryPointFuncType>(
+      dlsym(_sharedLibraryHandle, entryPointName.c_str()));
+#endif
   if (!_entryPointFunc)
     throw std::runtime_error(reportSymbolLoadingError(entryPointName));
   _entryPointName = entryPointName;
   errno = 0; // No errors.
-#endif
 }
 
 const std::string ExecutionSession::inputSignature() const {

@@ -41,9 +41,11 @@ public:
   // argument, a vector of shapes of the objects as the second argument, and a
   // vector of strides of the object as the third argument. All pyRun arguments
   // should have the same length, otherwise python exceptions occur.
+#if 1
   std::vector<py::array> pyRun(const std::vector<py::array> &inputsPyArray,
       const std::vector<py::array> &shapesPyArray,
       const std::vector<py::array> &stridesPyArray);
+#endif
   std::string pyInputSignature();
   std::string pyOutputSignature();
 

@@ -22,6 +22,12 @@
 
 #include "OnnxMlirRuntime.h"
 
+// LLVM creates class llvm::sys::DynamicLibrary to wrap the utility for
+// Linux and Windows. 
+// To cut off the dependence to llvm, the linux interface will be used 
+// directly here. Support for Windows will be considered later.
+// The code of llvm::sys:;DynamicLibrary uses other llvm utilities and 
+// cannot be used as source code directly.
 #ifdef USING_LLVM
 #include "llvm/Support/DynamicLibrary.h"
 typedef llvm::sys::DynamicLibrary DynamicLibraryHandleType;

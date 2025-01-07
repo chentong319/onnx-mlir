@@ -44,7 +44,7 @@
 #include "src/Runtime/OMTensorHelper.hpp"
 #endif
 
-#include "src/Support/SmallFPConversion.h"
+//#include "src/Support/SmallFPConversion.h"
 
 #if defined(__APPLE__)
 // __errno_location() is called from krnl::emitErrNo() to set errno in
@@ -56,11 +56,13 @@ int *__attribute__((__weak__)) __errno_location(void) { return &errno; }
 // of these C runtime functions.
 // TODO: Figure out if we could get these with llvm/compiler-rt in a
 //       systematic way.
+#if 0
 float __extendhfsf2(uint16_t a) { return om_f16_to_f32(a); }
 float __gnu_h2f_ieee(uint16_t a) { return om_f16_to_f32(a); }
 uint16_t __gnu_f2h_ieee(float a) { return om_f32_to_f16(a); }
 uint16_t __truncsfhf2(float a) { return om_f32_to_f16(a); }
 uint16_t __truncdfhf2(double a) { return om_f32_to_f16(a); }
+#endif
 
 struct OMTensor {
 #ifdef __cplusplus
@@ -457,9 +459,11 @@ static void printElement(
   case ONNX_TYPE_INT64:
     fprintf(fout, "%lld", (long long)((int64_t *)dataPtr)[elemOffset]);
     break;
+#if 0 //Tong
   case ONNX_TYPE_FLOAT16:
     fprintf(fout, "%f", om_f16_to_f32(((uint16_t *)dataPtr)[elemOffset]));
     break;
+#endif
   case ONNX_TYPE_FLOAT:
     fprintf(fout, "%f", ((float *)dataPtr)[elemOffset]);
     break;
