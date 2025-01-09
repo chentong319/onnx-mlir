@@ -3,6 +3,15 @@ import docker
 import os
 import sys
 import tempfile
+import json
+
+def get_names_in_signature(signature):
+    names = []  
+    # Load the input signature.
+    signature_dict = json.loads(signature)
+    for sig in signature_dict:
+        names.append(sig["name"])
+    return names
 
 class InferenceSession:
     def __init__(self, model_path, **kwargs):
@@ -36,8 +45,8 @@ class InferenceSession:
          
 
         # Path to mount the model to the image
-        self.container_model_dirname = "/myspace"
-        self.container_output_path = "/myoutput"
+        self.container_model_dirname = "/myinput"
+        self.container_output_dirname = "/myoutput"
 
         self.model_path = model_path
 
@@ -53,33 +62,22 @@ class InferenceSession:
         command_str += " " + self.compile_options
         command_str += " " + os.path.join(self.container_model_dirname, self.model_basename)
 
-        """
         # ToFix: should use temporary directory for compilation, and
         # use "-o" to put the compiled library in the temporary directory.
-        #self.output_dirname = tempfile.TemporaryDirectory()
-        #self.compiled_model = os.path.join(self.output_dirname.name, self.model_basename.removesuffix(model_suffix)+".so")
-        command_str += " -o " + self.container_output_path
-        """
-        self.output_dirname = self.model_dirname
+        self.output_tempdir = tempfile.TemporaryDirectory()
+        self.output_dirname = self.output_tempdir.name
         self.compiled_model = os.path.join(self.output_dirname, self.model_basename.removesuffix(model_suffix)+".so")
-
-        print(command_str)
-        print(self.compiled_model)
+        command_str += " -o " + os.path.join(self.container_output_dirname, self.model_basename.removesuffix(model_suffix))
 
         self.container_client = docker.from_env()
-        """
+        # Logically, the model directory could be mounted as read only.
+        # But wrong time error occurred with "r" mode
         msg=self.container_client.containers.run(self.onnx_mlir_image,
             command_str,
-            volumes={self.model_dirname: {'bind': self.container_model_dirname, 'mode': 'r'}, self.output_dirname: {'bind': self.container_output_path, 'mode': 'rw'}
+            volumes={self.model_dirname: {'bind': self.container_model_dirname, 'mode': 'rw'}, self.output_dirname: {'bind': self.container_output_dirname, 'mode': 'rw'}
             }
         )
-        """
-        msg=self.container_client.containers.run(self.onnx_mlir_image,
-            command_str,
-            volumes={self.model_dirname: {'bind': self.container_model_dirname, 'mode': 'rw'}
-            }
-        )
-        print(msg)
+        print("afterwards tempdir: ", [f for f in os.listdir(self.output_dirname)])
         self.session = self.getSession()
 
     def getSession(self):
@@ -102,5 +100,28 @@ class InferenceSession:
             )
         return OMExecutionSession(self.compiled_model, "NONE")
 
-    def run(self, outputname, inputs, **kwargs):
+    def run(self, outputname, input_feed, **kwargs):
+        inputs = []
+        input_signature = self.session.input_signature()
+        input_names = get_names_in_signature(input_signature)
+        if input_feed:
+            if isinstance(input_feed, dict):
+                for name in input_names:
+                    if name in input_feed:
+                        inputs.append(input_feed[name])
+                    else:
+                        print("input name given: ", input_feed.keys())
+                        print("input name expected by model: ", input_names)
+                        print("do not match")
+                        exit(1)
+                # Since Python guarantees the order of values in a dictionary,
+                # the name check could be ignored as follows:
+                # inputs = list(input_feed.values())
+            else:
+                inputs = input_feed
+        else:
+            # Provide random value inputs
+            print("error: input is not provided. ToFix: random input")
+            exit(1)
+ 
         return self.session.run(inputs)
