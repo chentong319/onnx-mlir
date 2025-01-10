@@ -81,23 +81,35 @@ class InferenceSession:
         self.session = self.getSession()
 
     def getSession(self):
-        if not os.environ.get("ONNX_MLIR_HOME", None):
-            raise RuntimeError(
-                "Environment variable ONNX_MLIR_HOME is not set, please set it to the path to " 
-                "the HOME directory for onnx-mlir. The HOME directory for onnx-mlir refers to "
-            "th    e parent folder containing the bin, lib, etc sub-folders in which ONNX-MLIR "
-            "execu    tables and libraries can be found, typically `onnx-mlir/build/Debug`" 
-            )      
-        RUNTIME_DIR = os.path.join(os.environ["ONNX_MLIR_HOME"], "lib")
-        print(RUNTIME_DIR)
-        sys.path.append(RUNTIME_DIR)
-        try:    
-            from PyRuntime import OMExecutionSession
-        except ImportError:
-            raise ImportError(
-                "Looks like you did not build the PyRuntime target, build it by running `make PyRuntime`."
-                "You may need to set ONNX_MLIR_HOME to `onnx-mlir/build/Debug` since `make PyRuntime` outputs to `build/Debug` by default"
-            )
+        # When the script is used in package onnxmlir, the files to be imported
+        # are within the package. Path in the pakcage should be used.
+        # Otherwise, env variable ONNX_MLIR_HOME is used to for import path
+        if __package__ == "onnxmlir":
+            try:    
+                from .PyRuntime import OMExecutionSession
+            except ImportError:
+                raise ImportError(
+                    " Error in importing PyRuntime for onnxmlir package"
+                )
+
+        else:
+            if not os.environ.get("ONNX_MLIR_HOME", None):
+                raise RuntimeError(
+                    "Environment variable ONNX_MLIR_HOME is not set, please set it to the path to " 
+                    "the HOME directory for onnx-mlir. The HOME directory for onnx-mlir refers to "
+                    "the parent folder containing the bin, lib, etc sub-folders in which ONNX-MLIR "
+                    "execu    tables and libraries can be found, typically `onnx-mlir/build/Debug`" 
+                )      
+            RUNTIME_DIR = os.path.join(os.environ["ONNX_MLIR_HOME"], "lib")
+            sys.path.append(RUNTIME_DIR)
+            try:    
+                from PyRuntime import OMExecutionSession
+            except ImportError:
+                raise ImportError(
+                    "Looks like you did not build the PyRuntime target, build it by running `make PyRuntime`."
+                    "You may need to set ONNX_MLIR_HOME to `onnx-mlir/build/Debug` since `make PyRuntime` outputs to `build/Debug` by default"
+                )
+
         return OMExecutionSession(self.compiled_model, "NONE")
 
     def run(self, outputname, input_feed, **kwargs):
