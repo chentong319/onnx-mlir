@@ -1,1 +1,1 @@
-from .RunONNXModel import InferenceSession
+from .onnxmlirdocker import InferenceSession

@@ -11,7 +11,7 @@ import numpy as np
 
 if __package__ == "onnxmlir":
     try:
-        from PyRuntimeC import OMExecutionSession as OMExecutionSession_
+        from .PyRuntimeC import OMExecutionSession as OMExecutionSession_
     except ImportError:
         raise ImportError(
             "Failure to load the prebuild PyRuntimeC.*.so."
