@@ -18,6 +18,22 @@ struct PrintONNXOpPass : public impl::PrintONNXOpBase<PrintONNOPPass> {
 };
 
 void PrintONNXOpPass::runOnOperation() {
+    allowedOps.setRegexString(printONNXOpNodeName);
+  getOperation().walk([&](mlir::Operation *op) -> WalkResult {
+    // Check whether the current op is the specified one
+    bool skip = false;
+    if (printONNXOpNodeName != "")
+      StringAttr nodeName =
+          op->getAttrOfType<mlir::StringAttr>("onnx_node_name");
+      if (nodeName && !nodeName.getValue().empty()) {
+        skip = true;
+      } else {
+        skip = !nodeName.getValue().str().constains(printONNXOpNodeName);
+      }
+    }
+    if (skip)
+      return;
+    
 }
 
 std::unique_ptr<Pass> onnx_mlir::createPrintONNXOpPass() {

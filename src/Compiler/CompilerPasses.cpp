@@ -169,6 +169,7 @@ void addONNXToMLIRPasses(mlir::PassManager &pm, bool targetCPU,
   if (instrumentStage == onnx_mlir::InstrumentStages::Onnx)
     pm.addNestedPass<func::FuncOp>(
         onnx_mlir::createInstrumentPass(instrumentOps, instrumentActions));
+  pm.addPass(onnx_mlir::createPrintONNXOpPass());
 }
 
 void addONNXToKrnlPasses(mlir::PassManager &pm, int optLevel, bool enableCSE,

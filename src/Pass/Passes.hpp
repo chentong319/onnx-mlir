@@ -65,6 +65,9 @@ std::unique_ptr<mlir::Pass> createInstrumentCleanupPass();
 std::unique_ptr<mlir::Pass> createInstrumentONNXSignaturePass(
     const std::string pattern);
 
+/// Pass to print value of input/output tensor of specified op
+std::unique_ptr<mlir::Pass> createPrintONNXOpPass();
+
 /// Pass for simplifying shape-related ONNX operations.
 std::unique_ptr<mlir::Pass> createSimplifyShapeRelatedOpsPass();
 
