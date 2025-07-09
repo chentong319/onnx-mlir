@@ -33,6 +33,9 @@ LogicalResult ONNXGenericDFTOpShapeHelper<OP_TYPE>::customComputeShape(
   // Get info about input data operand.
   Value input = operandAdaptor.getInput();
   // Get the rank to compensate for N dimensions.
+  if (!hasShapeAndRank(input)) {
+    return failure();
+  }
   int64_t rank = createIE->getShapedTypeRank(input);
 
   // Check if the dimension for axis is a literal and in range.
@@ -67,7 +70,7 @@ LogicalResult ONNXGenericDFTOpShapeHelper<OP_TYPE>::customComputeShape(
       }
     }
   }
-  outputDims.emplace_back(LiteralIndexExpr(2));
+  outputDims.emplace_back(LitIE(2));
 
   // Save the final result.
   setOutputDims(outputDims);
@@ -88,7 +91,7 @@ LogicalResult ONNXGenericDFTOpShapeHelper<ONNXDFTOp>::computeShape() {
 //===----------------------------------------------------------------------===//
 
 LogicalResult ONNXDFTOp::inferShapes(
-    std::function<void(mlir::Region &)> doShapeInference) {
+    std::function<void(Region &)> doShapeInference) {
   // Cannot infer the output shape if the operands shape isn't known yet.
   if (!hasShapeAndRank(getOperation()))
     return success();
@@ -97,7 +100,8 @@ LogicalResult ONNXDFTOp::inferShapes(
   if (!isNoneValue(getAxis()) && !hasShapeAndRank(getAxis()))
     return success();
 
-  Type elementType = getInput().getType().cast<ShapedType>().getElementType();
+  Type elementType =
+      mlir::cast<ShapedType>(getInput().getType()).getElementType();
   ONNXDFTOpShapeHelper shapeHelper(getOperation(), {});
   return shapeHelper.computeShapeAndUpdateType(elementType);
 }

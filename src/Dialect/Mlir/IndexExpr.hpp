@@ -4,7 +4,7 @@
 
 //===----------------IndexExpr.hpp - Index expression---------------------=== //
 //
-// Copyright 2020-2023 The IBM Research Authors.
+// Copyright 2020-2024 The IBM Research Authors.
 //
 // =============================================================================
 //
@@ -13,7 +13,8 @@
 //
 //===----------------------------------------------------------------------===//
 
-#pragma once
+#ifndef ONNX_MLIR_INDEX_EXPR_H
+#define ONNX_MLIR_INDEX_EXPR_H
 
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
@@ -236,8 +237,8 @@ result in a new Dim variable.
     for (int ii = 0; ii < outputRank; ++ii) {
       Value inductionVal = outputLoops.getInductionVar(ii);
       DimIndexExpr inductionIndex(inductionVal);
-      IndexExpr start = SymbolIndexExpr(shapeHelper.starts[ii]);
-      IndexExpr step = SymbolIndexExpr(shapeHelper.steps[ii]);
+      IndexExpr start = SymIE(shapeHelper.starts[ii]);
+      IndexExpr step = SymIE(shapeHelper.steps[ii]);
       loadIndices.emplace_back((step * inductionIndex) + start);
       storeIndices.emplace_back(inductionIndex);
     }
@@ -336,12 +337,12 @@ public:
   // Constructor for a scope. Top level scope must provide rewriter (possibly
   // null if we cannot generate code at this time) and location.
   IndexExprScope(mlir::OpBuilder *rewriter, mlir::Location loc);
-  IndexExprScope(DialectBuilder &db);
+  IndexExprScope(const DialectBuilder &db);
   // Constructor for subsequent nested scopes. Providing enclosing scope is
   // technically not necessary (nullptr can be passed); it is used to allow a
   // user to explicitly name the enclosing scope.
   IndexExprScope(mlir::OpBuilder *rewriter, IndexExprScope *enclosingScope);
-  IndexExprScope(DialectBuilder &db, IndexExprScope *enclosingScope);
+  IndexExprScope(const DialectBuilder &db, IndexExprScope *enclosingScope);
   // Destructor which release all IndexExpr associated with this scope.
   virtual ~IndexExprScope();
 
@@ -401,6 +402,9 @@ private:
 //===----------------------------------------------------------------------===//
 // IndexExprExpr
 //===----------------------------------------------------------------------===//
+
+using DimsExpr = llvm::SmallVector<IndexExpr, 4>;
+using DimsExprRef = mlir::ArrayRef<IndexExpr>;
 
 // Data structure that is the public interface for IndexExpr. It is a shallow
 // data structure that is simply a pointer to the actual data (IndexExprImpl).
@@ -467,8 +471,8 @@ public:
   bool isLiteralAndSmallerThan(double b) const;            // Values smaller.
   bool isLiteralAndSmallerThan(IndexExpr const b) const;   // Values smaller.
   // Test if all element in list are literals.
-  static bool isLiteral(llvm::SmallVectorImpl<IndexExpr> &list);
-  static bool isNonNegativeLiteral(llvm::SmallVectorImpl<IndexExpr> &list);
+  static bool isLiteral(mlir::ArrayRef<IndexExpr> list);
+  static bool isNonNegativeLiteral(mlir::ArrayRef<IndexExpr> list);
 
   // Getters.
   IndexExprScope &getScope() const { return *getScopePtr(); }
@@ -561,10 +565,10 @@ public:
   IndexExpr selectOrSelf(IndexExpr const compare, int64_t const trueVal) const;
 
   // Return min or max of a list of IndexExpr.
-  static IndexExpr min(llvm::SmallVectorImpl<IndexExpr> &vals);
+  static IndexExpr min(mlir::ArrayRef<IndexExpr> vals);
   static IndexExpr min(IndexExpr const first, IndexExpr const second);
   static IndexExpr min(IndexExpr const first, int64_t const second);
-  static IndexExpr max(llvm::SmallVectorImpl<IndexExpr> &vals);
+  static IndexExpr max(mlir::ArrayRef<IndexExpr> vals);
   static IndexExpr max(IndexExpr const first, IndexExpr const second);
   static IndexExpr max(IndexExpr const first, int64_t const second);
 
@@ -578,7 +582,7 @@ public:
   // Debug (enable running with --debug-only=index-expr, for example).
   void debugPrint(const std::string &msg) const;
   static void debugPrint(
-      const std::string &msg, const llvm::SmallVectorImpl<IndexExpr> &list);
+      const std::string &msg, const mlir::ArrayRef<IndexExpr> list);
 
 protected:
   // Private queries.
@@ -595,8 +599,7 @@ protected:
   using F1 = std::function<IndexExpr(IndexExpr const)>;
   using F2 = std::function<IndexExpr(IndexExpr const, IndexExpr const)>;
   using F2Self = std::function<IndexExpr(IndexExpr, IndexExpr const)>;
-  using Flist =
-      std::function<IndexExpr(IndexExpr, llvm::SmallVectorImpl<IndexExpr> &)>;
+  using Flist = std::function<IndexExpr(IndexExpr, mlir::ArrayRef<IndexExpr>)>;
   using F3 = std::function<IndexExpr(
       IndexExpr const, IndexExpr const, IndexExpr const)>;
   // Support for operations: common handling for multiple operations.
@@ -607,15 +610,15 @@ protected:
   IndexExpr unaryOp(
       bool resIsFloat, F1 litFct, F1 affineExprFct, F1 valueFct) const;
   // Res is float is the same as a & b.
-  IndexExpr binaryOp(IndexExpr const b, bool affineWithLitB, bool hasNeutralA,
-      bool hasNeutralB, double neutralVal, F2 fInteger, F2 fAffine,
-      F2 fValue) const;
+  IndexExpr binaryOp(IndexExpr const b, bool propagateIntoMinMax,
+      bool affineWithLitB, bool hasNeutralA, bool hasNeutralB,
+      double neutralVal, F2 fInteger, F2 fAffine, F2 fValue) const;
   IndexExpr compareOp(
       mlir::arith::CmpIPredicate comparePred, IndexExpr const b) const;
   IndexExpr compareOp(
       mlir::arith::CmpFPredicate comparePred, IndexExpr const b) const;
-  static IndexExpr reductionOp(llvm::SmallVectorImpl<IndexExpr> &vals,
-      F2Self litRed, Flist affineRed, F2Self valueRed);
+  static IndexExpr reductionOp(mlir::ArrayRef<IndexExpr> vals, F2Self litRed,
+      Flist affineRed, F2Self valueRed);
   // Data: pointer to implemented object.
   IndexExprImpl *indexExprObj = nullptr;
 };
@@ -825,6 +828,7 @@ private:
 //===----------------------------------------------------------------------===//
 
 using LitIE = LiteralIndexExpr;
+using PredIE = PredicateIndexExpr;
 using SymIE = SymbolIndexExpr;
 using DimIE = DimIndexExpr;
 
@@ -839,7 +843,7 @@ inline IndexExpr operator*(int64_t const a, const IndexExpr &b) {
   return b * a;
 }
 inline IndexExpr operator-(int64_t const a, const IndexExpr &b) {
-  return LiteralIndexExpr(a) - b;
+  return LitIE(a) - b;
 }
 
 //===----------------------------------------------------------------------===//
@@ -867,19 +871,13 @@ void getIndexExprList(
 
 inline llvm::SmallVector<IndexExpr, 4> DimListIE(mlir::ValueRange range) {
   llvm::SmallVector<IndexExpr, 4> outputList;
-  getIndexExprList<DimIndexExpr>(range, outputList);
-  return outputList;
-}
-
-inline llvm::SmallVector<IndexExpr, 4> SymListIE(mlir::ValueRange range) {
-  llvm::SmallVector<IndexExpr, 4> outputList;
-  getIndexExprList<SymbolIndexExpr>(range, outputList);
+  getIndexExprList<DimIE>(range, outputList);
   return outputList;
 }
 
 // Create a list of IndexExpr of kind INDEX_EXPR from another list of IndexExpr.
 template <class INDEX_EXPR>
-void getIndexExprList(llvm::SmallVectorImpl<IndexExpr> &inputList,
+void getIndexExprList(const mlir::ArrayRef<IndexExpr> inputList,
     llvm::SmallVectorImpl<IndexExpr> &outputList) {
   outputList.clear();
   for (auto item : inputList)
@@ -887,16 +885,9 @@ void getIndexExprList(llvm::SmallVectorImpl<IndexExpr> &inputList,
 }
 
 inline llvm::SmallVector<IndexExpr, 4> DimListIE(
-    llvm::SmallVectorImpl<IndexExpr> &inputList) {
+    const mlir::ArrayRef<IndexExpr> inputList) {
   llvm::SmallVector<IndexExpr, 4> outputList;
-  getIndexExprList<DimIndexExpr>(inputList, outputList);
-  return outputList;
-}
-
-inline llvm::SmallVector<IndexExpr, 4> SymListIE(
-    llvm::SmallVectorImpl<IndexExpr> &inputList) {
-  llvm::SmallVector<IndexExpr, 4> outputList;
-  getIndexExprList<SymbolIndexExpr>(inputList, outputList);
+  getIndexExprList<DimIE>(inputList, outputList);
   return outputList;
 }
 
@@ -910,3 +901,4 @@ void getIndexExprListFromShape(mlir::ArrayRef<int64_t> inputList,
     llvm::SmallVectorImpl<IndexExpr> &outputList);
 
 } // namespace onnx_mlir
+#endif

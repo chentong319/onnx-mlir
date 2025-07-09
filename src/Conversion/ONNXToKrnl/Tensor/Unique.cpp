@@ -30,7 +30,7 @@ Value emitArgUnique(ConversionPatternRewriter &rewriter, Location loc,
   MultiDialectBuilder<KrnlBuilder, IndexExprBuilderForKrnl, MathBuilder> create(
       rewriter, loc);
   IndexExprScope scope(create.krnl);
-  MemRefType inputMemRefType = input.getType().cast<MemRefType>();
+  MemRefType inputMemRefType = mlir::cast<MemRefType>(input.getType());
   int64_t rank = inputMemRefType.getRank();
   assert(axis < rank && "axis is out of bound");
   LiteralIndexExpr zeroIE(0), oneIE(1);
@@ -105,7 +105,7 @@ struct ONNXUniqueOpLowering : public ConversionPattern {
     SmallVector<IndexExpr> XDims;
     create.krnlIE.getShapeAsDims(X, XDims);
 
-    Type elementType = X.getType().cast<MemRefType>().getElementType();
+    Type elementType = mlir::cast<MemRefType>(X.getType()).getElementType();
     int64_t rank = create.krnlIE.getShapedTypeRank(X);
     int64_t sorted = operandAdaptor.getSorted();
     std::optional<int64_t> optionalAxis = uniqueOp.getAxis();
@@ -125,16 +125,17 @@ struct ONNXUniqueOpLowering : public ConversionPattern {
     //
     Type indexTy = rewriter.getIndexType();
     Value iZero = create.math.constantIndex(0);
+    // Scalar, ok to use alloca.
     Value uniqueCount = create.mem.alloca(MemRefType::get({}, indexTy));
-    create.krnl.store(iZero, uniqueCount, {});
+    create.krnl.store(iZero, uniqueCount);
     Value noneValue;
     emitArgUnique(rewriter, loc, uniqueCount, X, axis, /*sorted=*/sorted,
         noneValue, noneValue, noneValue, noneValue, /*count_only=*/true);
     //
     // Calculate shapes of output Tensors
     //
-    Value total = create.krnl.load(uniqueCount, {});
-    NonAffineIndexExpr totalDimExpr = DimIndexExpr(total);
+    Value total = create.krnl.load(uniqueCount);
+    NonAffineIndexExpr totalDimExpr = DimIE(total);
     DimsExpr outputYDims;
     DimsExpr outputIndexDims;
     DimsExpr outputInverseIndexDims;
@@ -162,9 +163,8 @@ struct ONNXUniqueOpLowering : public ConversionPattern {
     Value outputY;
     if (hasStaticShape(uniqueOp.getY().getType())) {
       // This is a patch related to https://github.com/onnx/onnx/issues/6133
-      MemRefType memrefType =
-          typeConverter->convertType(uniqueOp.getY().getType())
-              .cast<MemRefType>();
+      MemRefType memrefType = mlir::cast<MemRefType>(
+          typeConverter->convertType(uniqueOp.getY().getType()));
       outputY = create.mem.alignedAlloc(memrefType);
     } else if (axis < 0) {
       MemRefType memrefType =
@@ -187,9 +187,8 @@ struct ONNXUniqueOpLowering : public ConversionPattern {
         isNoneValue(uniqueOp.getIndices())
             ? emptyMemref
             : (hasStaticShape(indicesType)
-                      ? create.mem.alignedAlloc(
-                            typeConverter->convertType(indicesType)
-                                .cast<MemRefType>())
+                      ? create.mem.alignedAlloc(mlir::cast<MemRefType>(
+                            typeConverter->convertType(indicesType)))
                       : create.mem.alignedAlloc(memrefType, outputIndexDims));
 
     Type inverseIndicesType = uniqueOp.getInverseIndices().getType();
@@ -197,9 +196,8 @@ struct ONNXUniqueOpLowering : public ConversionPattern {
         isNoneValue(uniqueOp.getInverseIndices())
             ? emptyMemref
             : (hasStaticShape(inverseIndicesType)
-                      ? create.mem.alignedAlloc(
-                            typeConverter->convertType(inverseIndicesType)
-                                .cast<MemRefType>())
+                      ? create.mem.alignedAlloc(mlir::cast<MemRefType>(
+                            typeConverter->convertType(inverseIndicesType)))
                       : create.mem.alignedAlloc(
                             memrefType, outputInverseIndexDims));
 
@@ -208,14 +206,13 @@ struct ONNXUniqueOpLowering : public ConversionPattern {
         isNoneValue(uniqueOp.getCounts())
             ? emptyMemref
             : (hasStaticShape(countsType)
-                      ? create.mem.alignedAlloc(
-                            typeConverter->convertType(countsType)
-                                .cast<MemRefType>())
+                      ? create.mem.alignedAlloc(mlir::cast<MemRefType>(
+                            typeConverter->convertType(countsType)))
                       : create.mem.alignedAlloc(memrefType, outputIndexDims));
     //
     // Emit a Unique call to get the outputs
     //
-    create.krnl.store(iZero, uniqueCount, {});
+    create.krnl.store(iZero, uniqueCount);
     emitArgUnique(rewriter, loc, uniqueCount, X, axis, /*sorted=*/sorted,
         outputY, indices, inverseIndices, counts, /*count_only=*/false);
     if (isNoneValue(indices))

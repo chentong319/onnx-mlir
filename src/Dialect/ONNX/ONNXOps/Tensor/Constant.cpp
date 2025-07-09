@@ -30,9 +30,10 @@ LogicalResult ONNXConstantOpShapeHelper::computeShape() {
 
   ElementsAttr valAttr;
   if (operandAdaptor.getSparseValue().has_value())
-    valAttr = operandAdaptor.getSparseValueAttr().cast<SparseElementsAttr>();
+    valAttr =
+        mlir::cast<SparseElementsAttr>(operandAdaptor.getSparseValueAttr());
   else
-    valAttr = operandAdaptor.getValueAttr().cast<ElementsAttr>();
+    valAttr = mlir::cast<ElementsAttr>(operandAdaptor.getValueAttr());
   return setOutputDimsFromTypeWithConstantShape(valAttr.getType());
 }
 
@@ -49,14 +50,14 @@ LogicalResult ONNXConstantOpShapeHelper::computeShape() {
 std::vector<Type> ONNXConstantOp::resultTypeInference() {
   ShapedType type;
   if (auto attr = getValueAttr()) {
-    type = cast<ElementsAttr>(attr).getShapedType();
+    type = mlir::cast<ElementsAttr>(attr).getShapedType();
   } else if (auto attr = getSparseValueAttr()) {
-    type = cast<ElementsAttr>(attr).getShapedType();
+    type = mlir::cast<ElementsAttr>(attr).getShapedType();
   } else if (auto attr = getValueFloatAttr()) {
-    type = RankedTensorType::get({}, FloatType::getF32(getContext()));
+    type = RankedTensorType::get({}, Float32Type::get(getContext()));
   } else if (auto attr = getValueFloatsAttr()) {
     int64_t size = attr.size();
-    type = RankedTensorType::get({size}, FloatType::getF32(getContext()));
+    type = RankedTensorType::get({size}, Float32Type::get(getContext()));
   } else if (auto attr = getValueIntAttr()) {
     type = RankedTensorType::get({}, IntegerType::get(getContext(), 64));
   } else if (auto attr = getValueIntsAttr()) {
@@ -90,11 +91,11 @@ LogicalResult ONNXConstantOp::inferShapes(
   }
   ElementsAttr valAttr;
   if (getSparseValue().has_value())
-    valAttr = getSparseValueAttr().cast<SparseElementsAttr>();
+    valAttr = mlir::cast<SparseElementsAttr>(getSparseValueAttr());
   else
-    valAttr = getValueAttr().cast<ElementsAttr>();
+    valAttr = mlir::cast<ElementsAttr>(getValueAttr());
   Type elementType =
-      valAttr.getType().cast<RankedTensorType>().getElementType();
+      mlir::cast<RankedTensorType>(valAttr.getType()).getElementType();
   ONNXConstantOpShapeHelper shapeHelper(getOperation(), {});
   return shapeHelper.computeShapeAndUpdateType(elementType);
 }

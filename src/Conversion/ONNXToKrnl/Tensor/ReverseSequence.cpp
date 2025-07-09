@@ -41,9 +41,9 @@ struct ONNXReverseSequenceOpLowering
 
     // Convert the output type to MemRefType.
     Type convertedType = typeConverter->convertType(*op->result_type_begin());
-    assert(convertedType && convertedType.isa<MemRefType>() &&
+    assert(convertedType && mlir::isa<MemRefType>(convertedType) &&
            "Failed to convert type to MemRefType");
-    MemRefType outputMemRefType = convertedType.cast<MemRefType>();
+    MemRefType outputMemRefType = mlir::cast<MemRefType>(convertedType);
 
     // Insert an allocation and deallocation for the output of this operation.
     Value alloc =
@@ -94,9 +94,9 @@ struct ONNXReverseSequenceOpLowering
 
     // Define loops and iteration trip counts (equivalent to size of output)
     ValueRange loopDef = create.krnl.defineLoops(outputRank);
-    SmallVector<IndexExpr, 4> lbs(outputRank, LiteralIndexExpr(0));
+    SmallVector<IndexExpr, 4> lbs(outputRank, LitIE(0));
     create.krnl.iterateIE(loopDef, loopDef, lbs, shapeHelper.getOutputDims(),
-        [&](KrnlBuilder &createKrnl, ValueRange loopInd) {
+        [&](const KrnlBuilder &createKrnl, ValueRange loopInd) {
           IndexExprScope innerLoopScope(&rewriter, shapeHelper.getScope());
 
           // compute the loop indices for the output

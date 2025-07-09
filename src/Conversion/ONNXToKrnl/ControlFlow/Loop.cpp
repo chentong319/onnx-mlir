@@ -68,7 +68,7 @@ struct ONNXLoopOpLowering : public OpConversionPattern<ONNXLoopOp> {
     // all loop iterations.
     for (unsigned long i = 0; i < adaptor.getVInitial().size(); i++) {
       Value origInput = loopOp.getVInitial()[i];
-      if (origInput.getType().isa<SeqType>()) {
+      if (mlir::isa<SeqType>(origInput.getType())) {
         Value zero = create.math.constantIndex(0);
         create.krnl.store(adaptor.getVInitial()[i], outputs[i], zero);
       } else {
@@ -79,9 +79,9 @@ struct ONNXLoopOpLowering : public OpConversionPattern<ONNXLoopOp> {
     // Convert the cond type to MemRefType.
     Type convertedType =
         typeConverter->convertType(adaptor.getCond().getType());
-    assert(convertedType && convertedType.isa<MemRefType>() &&
+    assert(convertedType && mlir::isa<MemRefType>(convertedType) &&
            "Failed to convert type to MemRefType");
-    MemRefType condMemRefTy = convertedType.cast<MemRefType>();
+    MemRefType condMemRefTy = mlir::cast<MemRefType>(convertedType);
 
     // Create a memref for recording loop condition, initialize it with the
     // initial loop condition.
@@ -100,7 +100,7 @@ struct ONNXLoopOpLowering : public OpConversionPattern<ONNXLoopOp> {
     ValueRange loopDef = createKrnl.defineLoops(1);
     Value zero = create.math.constantIndex(0);
     createKrnl.iterate(loopDef, loopDef, {zero}, {maxTripCount},
-        [&](KrnlBuilder &createKrnl, ValueRange loopInd) {
+        [&](const KrnlBuilder &createKrnl, ValueRange loopInd) {
           OpBuilder::InsertionGuard insertGuard(rewriter);
 
           Value condReg = createKrnl.load(cond);
@@ -129,7 +129,7 @@ struct ONNXLoopOpLowering : public OpConversionPattern<ONNXLoopOp> {
 
           // For SeqType, load the value for the storage
           for (unsigned long i = 0; i < loopOp.getVInitial().size(); i++) {
-            if (loopOp.getVInitial()[i].getType().isa<SeqType>()) {
+            if (mlir::isa<SeqType>(loopOp.getVInitial()[i].getType())) {
               Value seqValue = create.krnl.load(outputs[i], zero);
               params.emplace_back(seqValue);
             } else {
@@ -219,11 +219,10 @@ struct ONNXLoopOpLowering : public OpConversionPattern<ONNXLoopOp> {
               outputs.begin() + adaptor.getVInitial().size(), outputs.end());
           for (auto scanIntermediateToFinal :
               llvm::zip(scanIntermediate, scanOutputs)) {
-            Type elementType = std::get<1>(scanIntermediateToFinal)
-                                   .getType()
-                                   .cast<MemRefType>()
+            Type elementType = mlir::cast<MemRefType>(
+                std::get<1>(scanIntermediateToFinal).getType())
                                    .getElementType();
-            if (elementType.dyn_cast<MemRefType>()) {
+            if (mlir::dyn_cast<MemRefType>(elementType)) {
               // accumulate dynamic tensor
               rewriter.create<KrnlSeqStoreOp>(loc,
                   std::get<0>(scanIntermediateToFinal),
@@ -239,7 +238,7 @@ struct ONNXLoopOpLowering : public OpConversionPattern<ONNXLoopOp> {
           // outside the iteration scope so next iteration can use them as init
           // value.
           for (unsigned long i = 0; i < loopOp.getVInitial().size(); i++) {
-            if (loopOp.getVInitial()[i].getType().isa<SeqType>()) {
+            if (mlir::isa<SeqType>(loopOp.getVInitial()[i].getType())) {
               create.krnl.store(bodyOutputs[i + 1], outputs[i], zero);
             } else {
               emitCopy(rewriter, loc, bodyOutputs[i + 1], outputs[i]);
@@ -267,8 +266,8 @@ struct ONNXLoopOpLowering : public OpConversionPattern<ONNXLoopOp> {
     for (unsigned long i = 0; i < outputs.size(); i++) {
       Value output = outputs[i];
       auto seqElementType =
-          output.getType().cast<MemRefType>().getElementType();
-      if (seqElementType.isa<MemRefType>()) {
+          mlir::cast<MemRefType>(output.getType()).getElementType();
+      if (mlir::isa<MemRefType>(seqElementType)) {
         // need to distinguish seqType in v_final and scan
         if (i < loopOp.v_final().size()) {
           // In v_final
@@ -282,27 +281,29 @@ struct ONNXLoopOpLowering : public OpConversionPattern<ONNXLoopOp> {
           // Here loop is assumed to be executed at least once.
           Value firstElement =
               create.krnl.load(output, create.math.constantIndex(0));
-          SmallVector<mlir::Value, 4> allocParams;
+          SmallVector<Value, 4> allocParams;
           SmallVector<int64_t, 4> dims;
-          dims.emplace_back(output.getType().cast<MemRefType>().getShape()[0]);
-          if (output.getType().cast<MemRefType>().isDynamicDim(0))
+          dims.emplace_back(
+              mlir::cast<MemRefType>(output.getType()).getShape()[0]);
+          if (mlir::cast<MemRefType>(output.getType()).isDynamicDim(0))
             allocParams.emplace_back(create.mem.dim(output, 0));
           for (auto i = 0;
-               i < firstElement.getType().cast<MemRefType>().getRank(); i++) {
+               i < mlir::cast<MemRefType>(firstElement.getType()).getRank();
+               i++) {
             dims.emplace_back(
-                firstElement.getType().cast<MemRefType>().getShape()[i]);
-            if (firstElement.getType().cast<MemRefType>().isDynamicDim(i))
+                mlir::cast<MemRefType>(firstElement.getType()).getShape()[i]);
+            if (mlir::cast<MemRefType>(firstElement.getType()).isDynamicDim(i))
               allocParams.emplace_back(create.mem.dim(firstElement, i));
           }
           ArrayRef<int64_t> shape(dims.data(), dims.size());
           auto flatType = MemRefType::get(shape,
-              firstElement.getType().cast<MemRefType>().getElementType());
+              mlir::cast<MemRefType>(firstElement.getType()).getElementType());
           Value alloc = create.mem.alignedAlloc(flatType, allocParams);
           // copy the value
           KrnlBuilder createKrnl(rewriter, loc);
           ValueRange loopDef = createKrnl.defineLoops(1);
           createKrnl.iterate(loopDef, loopDef, {zero}, {maxTripCount},
-              [&](KrnlBuilder &createKrnl, ValueRange loopInd) {
+              [&](const KrnlBuilder &createKrnl, ValueRange loopInd) {
                 // Wrap with KrnlRegionOp because emitCopy uses the result of
                 // SeqExtract for loop bound.
                 KrnlRegionOp regionOp = rewriter.create<KrnlRegionOp>(loc);
@@ -327,10 +328,10 @@ struct ONNXLoopOpLowering : public OpConversionPattern<ONNXLoopOp> {
     return success();
   }
 
-  void allocateMemoryForVFinal(mlir::Location loc,
+  void allocateMemoryForVFinal(Location loc,
       ConversionPatternRewriter &rewriter, Operation *op,
-      ONNXLoopOpAdaptor adaptor, SmallVectorImpl<mlir::Value> &outputs) const {
-    auto loopOp = dyn_cast<ONNXLoopOp>(op);
+      ONNXLoopOpAdaptor adaptor, SmallVectorImpl<Value> &outputs) const {
+    auto loopOp = mlir::dyn_cast<ONNXLoopOp>(op);
     for (const auto &ioPair :
         llvm::zip(adaptor.getVInitial(), loopOp.v_final())) {
       auto vInit = std::get<0>(ioPair);
@@ -338,11 +339,11 @@ struct ONNXLoopOpLowering : public OpConversionPattern<ONNXLoopOp> {
 
       // Convert vFinal's type to MemRefType.
       Type convertedType = typeConverter->convertType(vFinal.getType());
-      assert(convertedType && convertedType.isa<MemRefType>() &&
+      assert(convertedType && mlir::isa<MemRefType>(convertedType) &&
              "Failed to convert type to MemRefType");
-      MemRefType memRefType = convertedType.cast<MemRefType>();
+      MemRefType memRefType = mlir::cast<MemRefType>(convertedType);
 
-      if (vFinal.getType().isa<SeqType>()) {
+      if (mlir::isa<SeqType>(vFinal.getType())) {
         memRefType = MemRefType::get({1}, memRefType);
       }
 
@@ -355,17 +356,17 @@ struct ONNXLoopOpLowering : public OpConversionPattern<ONNXLoopOp> {
     }
   }
 
-  void allocateMemoryForScanOutput(mlir::Location loc,
+  void allocateMemoryForScanOutput(Location loc,
       ConversionPatternRewriter &rewriter, Operation *op,
-      ONNXLoopOpAdaptor adaptor, SmallVectorImpl<mlir::Value> &outputs,
+      ONNXLoopOpAdaptor adaptor, SmallVectorImpl<Value> &outputs,
       bool isWhile = false) const {
-    auto loopOp = dyn_cast<ONNXLoopOp>(op);
+    auto loopOp = mlir::dyn_cast<ONNXLoopOp>(op);
     for (const auto &opScanOutput : loopOp.scan_outputs()) {
       // Convert opScanOutput's type to MemRefType.
       Type convertedType = typeConverter->convertType(opScanOutput.getType());
-      assert(convertedType && convertedType.isa<MemRefType>() &&
+      assert(convertedType && mlir::isa<MemRefType>(convertedType) &&
              "Failed to convert type to MemRefType");
-      MemRefType memRefType = convertedType.cast<MemRefType>();
+      MemRefType memRefType = mlir::cast<MemRefType>(convertedType);
 
       // Allocate memory for the scan outputs. There're no good "reference"
       // shape for scan outputs. So if the scan outputs do not have constant
@@ -379,7 +380,7 @@ struct ONNXLoopOpLowering : public OpConversionPattern<ONNXLoopOp> {
         alloc = create.mem.alignedAlloc(memRefType);
       else {
         auto rankedScanOutTy = memRefType;
-        SmallVector<mlir::Value, 4> allocParams;
+        SmallVector<Value, 4> allocParams;
 
         // Check the loop accumulation dimension
         if (rankedScanOutTy.isDynamicDim(0)) {
@@ -392,7 +393,7 @@ struct ONNXLoopOpLowering : public OpConversionPattern<ONNXLoopOp> {
           if (isWhile) {
             llvm_unreachable("Scan output for while loop is not supported");
           }
-          assert(!adaptor.getM().getType().isa<NoneType>());
+          assert(!mlir::isa<NoneType>(adaptor.getM().getType()));
           Value maxTripCount =
               rewriter.create<KrnlLoadOp>(loc, adaptor.getM()).getResult();
           allocParams.emplace_back(rewriter.create<arith::IndexCastOp>(
@@ -444,18 +445,18 @@ struct ONNXLoopOpLowering : public OpConversionPattern<ONNXLoopOp> {
       const Value &src, const Value &dest,
       std::vector<Value> writePrefix = {}) const {
     OpBuilder::InsertionGuard insertGuard(rewriter);
-    auto srcTy = src.getType().cast<MemRefType>();
+    auto srcTy = mlir::cast<MemRefType>(src.getType());
     SmallVector<Value, 4> readIV;
     MultiDialectBuilder<KrnlBuilder, IndexExprBuilderForKrnl> create(
         rewriter, loc);
     if (srcTy.getRank() > 0) {
       IndexExprScope childScope(create.krnl);
       ValueRange loopDef = create.krnl.defineLoops(srcTy.getRank());
-      SmallVector<IndexExpr, 4> lbs(srcTy.getRank(), LiteralIndexExpr(0));
+      SmallVector<IndexExpr, 4> lbs(srcTy.getRank(), LitIE(0));
       SmallVector<IndexExpr, 4> ubs;
       create.krnlIE.getShapeAsDims(src, ubs);
       create.krnl.iterateIE(loopDef, loopDef, lbs, ubs,
-          [&](KrnlBuilder &createKrnl, ValueRange loopInd) {
+          [&](const KrnlBuilder &createKrnl, ValueRange loopInd) {
             SmallVector<Value, 4> writeIV(
                 writePrefix.begin(), writePrefix.end());
             writeIV.insert(writeIV.end(), loopInd.begin(), loopInd.end());
@@ -480,7 +481,7 @@ struct ONNXLoopOpLowering : public OpConversionPattern<ONNXLoopOp> {
   // iteration variable
 
   bool isWhileLoop(Operation *op) const {
-    auto onnxLoopOp = dyn_cast<ONNXLoopOp>(op);
+    auto onnxLoopOp = mlir::dyn_cast<ONNXLoopOp>(op);
 
     // Check whether continue condition is modified or not
     // Code copied from src/Dialect/ONNX/Rewrite.cpp
@@ -505,8 +506,8 @@ struct ONNXLoopOpLowering : public OpConversionPattern<ONNXLoopOp> {
     // `ONNXYieldOp (cond, ..., ubValue, ..., newCounterValue, ...)`
     // which means the condition is loop invariant.
     Value breakCond = yieldOp->getOperands()[0];
-    if (breakCond.isa<BlockArgument>() &&
-        breakCond.cast<BlockArgument>().getArgNumber() == 1) {
+    if (mlir::isa<BlockArgument>(breakCond) &&
+        mlir::cast<BlockArgument>(breakCond).getArgNumber() == 1) {
     } else
       return true;
 
@@ -516,7 +517,7 @@ struct ONNXLoopOpLowering : public OpConversionPattern<ONNXLoopOp> {
   LogicalResult rewriteWithSCFWhile(Operation *op, ValueRange operands,
       ConversionPatternRewriter &rewriter) const {
     Location loc = ONNXLoc<ONNXLoopOp>(op);
-    auto loopOp = dyn_cast<ONNXLoopOp>(op);
+    auto loopOp = mlir::dyn_cast<ONNXLoopOp>(op);
     MultiDialectBuilder<KrnlBuilder, MemRefBuilder, MathBuilder> create(
         rewriter, loc);
 
@@ -688,11 +689,11 @@ struct ONNXLoopOpLowering : public OpConversionPattern<ONNXLoopOp> {
           resultsRange.begin(), resultsRange.end());
       for (unsigned long i = 0; i < bodyOutputs.size(); i++) {
         Value output = bodyOutputs[i];
-        assert((output.getType().isa<TensorType>() ||
-                   output.getType().isa<MemRefType>()) &&
+        assert((mlir::isa<TensorType>(output.getType()) ||
+                   mlir::isa<MemRefType>(output.getType())) &&
                "Expecting loop body function output to consist of "
                "tensors/memrefs.");
-        auto outputTy = output.getType().cast<ShapedType>();
+        auto outputTy = mlir::cast<ShapedType>(output.getType());
         bodyOutputs[i] = rewriter
                              .create<UnrealizedConversionCastOp>(loc,
                                  MemRefType::get(outputTy.getShape(),
@@ -728,11 +729,10 @@ struct ONNXLoopOpLowering : public OpConversionPattern<ONNXLoopOp> {
 
       for (auto scanIntermediateToFinal :
           llvm::zip(scanIntermediate, scanOutputs)) {
-        Type elementType = std::get<1>(scanIntermediateToFinal)
-                               .getType()
-                               .cast<MemRefType>()
+        Type elementType = mlir::cast<MemRefType>(
+            std::get<1>(scanIntermediateToFinal).getType())
                                .getElementType();
-        if (elementType.dyn_cast<MemRefType>()) {
+        if (mlir::dyn_cast<MemRefType>(elementType)) {
           // TODO(chentong): handle dynamic scan output for while loop
           llvm_unreachable("Not implemented yet");
         } else {

@@ -31,6 +31,9 @@ LogicalResult ONNXCompressOpShapeHelper::computeShape() {
   ONNXCompressOpAdaptor operandAdaptor(operands);
   Value input = operandAdaptor.getInput();
   Value cond = operandAdaptor.getCondition();
+  if (!hasShapeAndRank(input)) {
+    return failure();
+  }
   int64_t inputRank = createIE->getShapedTypeRank(input);
   createIE->assertHasShapeAndRank(cond);
   std::optional<int64_t> optionalAxis = compressOp.getAxis();
@@ -83,7 +86,7 @@ LogicalResult ONNXCompressOp::verify() {
   if (!hasShapeAndRank(getOperation()))
     return success();
 
-  int64_t inputRank = getInput().getType().cast<ShapedType>().getRank();
+  int64_t inputRank = mlir::cast<ShapedType>(getInput().getType()).getRank();
   std::optional<int64_t> optionalAxis = getAxis();
 
   if (optionalAxis.has_value()) {
@@ -95,7 +98,7 @@ LogicalResult ONNXCompressOp::verify() {
           onnx_mlir::Diagnostic::Range<int64_t>(-inputRank, inputRank - 1));
   }
 
-  int64_t condRank = getCondition().getType().cast<ShapedType>().getRank();
+  int64_t condRank = mlir::cast<ShapedType>(getCondition().getType()).getRank();
   if (condRank != 1)
     return onnx_mlir::Diagnostic::emitAttributeOutOfRangeError(
         *this->getOperation(), "condition", condRank,
@@ -114,7 +117,8 @@ LogicalResult ONNXCompressOp::inferShapes(
   if (!hasShapeAndRank(getOperation()))
     return success();
 
-  Type elementType = getInput().getType().cast<ShapedType>().getElementType();
+  Type elementType =
+      mlir::cast<ShapedType>(getInput().getType()).getElementType();
   ONNXCompressOpShapeHelper shapeHelper(getOperation(), {});
   return shapeHelper.computeShapeAndUpdateType(elementType);
 }

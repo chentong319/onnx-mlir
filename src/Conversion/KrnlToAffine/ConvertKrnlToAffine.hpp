@@ -4,7 +4,7 @@
 
 //====------ ConvertKrnlToAffine.hpp - Krnl Dialect Lowering --------------===//
 //
-// Copyright 2019-2022 The IBM Research Authors.
+// Copyright 2019-2024 The IBM Research Authors.
 //
 // =============================================================================
 //
@@ -12,7 +12,8 @@
 //
 //===----------------------------------------------------------------------===//
 
-#pragma once
+#ifndef ONNX_MLIR_CONVERT_KRNL_TO_AFFINE_H
+#define ONNX_MLIR_CONVERT_KRNL_TO_AFFINE_H
 
 #include "src/Dialect/Krnl/DialectBuilder.hpp"
 #include "src/Dialect/Krnl/KrnlOps.hpp"
@@ -55,7 +56,8 @@ using UnrollAndJamList = llvm::SmallVector<UnrollAndJamRecord, 4>;
 using UnrollAndJamMap = std::map<mlir::Operation *, UnrollAndJamList *>;
 
 void populateKrnlToAffineConversion(mlir::TypeConverter &typeConverter,
-    mlir::RewritePatternSet &patterns, mlir::MLIRContext *ctx);
+    mlir::RewritePatternSet &patterns, mlir::MLIRContext *ctx,
+    bool enableParallel);
 
 void populateLoweringKrnlCopyFromBufferOpPattern(
     mlir::TypeConverter &typeConverter, mlir::RewritePatternSet &patterns,
@@ -76,7 +78,8 @@ void populateLoweringKrnlGetLinearOffsetIndexOpPattern(
     mlir::MLIRContext *ctx);
 
 void populateLoweringKrnlMatmultOpPattern(mlir::TypeConverter &typeConverter,
-    mlir::RewritePatternSet &patterns, mlir::MLIRContext *ctx);
+    mlir::RewritePatternSet &patterns, mlir::MLIRContext *ctx,
+    bool parallelEnabled);
 
 void populateLoweringKrnlMemsetOpPattern(mlir::TypeConverter &typeConverter,
     mlir::RewritePatternSet &patterns, mlir::MLIRContext *ctx);
@@ -89,3 +92,4 @@ void populateLoweringKrnlTerminatorOpPattern(mlir::TypeConverter &typeConverter,
 
 } // namespace krnl
 } // namespace onnx_mlir
+#endif

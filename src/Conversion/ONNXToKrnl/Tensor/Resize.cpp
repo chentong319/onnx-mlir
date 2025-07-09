@@ -34,9 +34,9 @@ struct ONNXResizeOpLowering : public OpConversionPattern<ONNXResizeOp> {
 
     // Convert the output type to MemRefType.
     Type convertedType = typeConverter->convertType(*op->result_type_begin());
-    assert(convertedType && convertedType.isa<MemRefType>() &&
+    assert(convertedType && mlir::isa<MemRefType>(convertedType) &&
            "Failed to convert type to MemRefType");
-    MemRefType memRefType = convertedType.cast<MemRefType>();
+    MemRefType memRefType = mlir::cast<MemRefType>(convertedType);
     int64_t rank = memRefType.getShape().size();
 
     // Check limitation imposed by implementation
@@ -118,11 +118,11 @@ struct ONNXResizeOpLowering : public OpConversionPattern<ONNXResizeOp> {
     Value one = create.math.constantIndex(1);
 
     ValueRange loopDef = create.krnl.defineLoops(rank);
-    SmallVector<IndexExpr, 4> lbs(rank, LiteralIndexExpr(0));
+    SmallVector<IndexExpr, 4> lbs(rank, LitIE(0));
     SmallVector<IndexExpr, 4> ubs;
     create.krnlIE.getShapeAsDims(alloc, ubs);
-    create.krnl.iterateIE(
-        loopDef, loopDef, lbs, ubs, [&](KrnlBuilder &ck, ValueRange loopInd) {
+    create.krnl.iterateIE(loopDef, loopDef, lbs, ubs,
+        [&](const KrnlBuilder &ck, ValueRange loopInd) {
           MultiDialectBuilder<KrnlBuilder, IndexExprBuilderForKrnl, MathBuilder>
               create(ck);
           SmallVector<Value, 4> readIndices;

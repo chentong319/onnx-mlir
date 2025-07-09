@@ -61,7 +61,7 @@ inline int64_t summarizeHigherDims(
 void processDim(Value oper, int64_t &e4, int64_t &e3, int64_t &e2, int64_t &e1,
     std::string &msg) {
   // At this time, use only 1 of the two operands.
-  ShapedType operType = oper.getType().dyn_cast_or_null<ShapedType>();
+  ShapedType operType = mlir::dyn_cast_or_null<ShapedType>(oper.getType());
   assert(operType && operType.hasRank() && "expected shaped type with rank");
   int64_t operRank = operType.getRank();
   assert(operRank <= 4 && "expected rank <= 4");
@@ -117,7 +117,7 @@ void estimateTimeForMatMulOp(Operation *op, Value a, Value b, bool aTransposed,
     bool bTransposed, const DimAnalysis *dimAnalysis, double &cpuEstimatedTime,
     double &nnpaEstimatedTime) {
   // Scanning A.
-  ShapedType aType = a.getType().dyn_cast_or_null<ShapedType>();
+  ShapedType aType = mlir::dyn_cast_or_null<ShapedType>(a.getType());
   assert(aType && aType.hasRank() && "expected shaped type with A rank");
   int64_t aRank = aType.getRank();
   llvm::ArrayRef<int64_t> aShape = aType.getShape();
@@ -128,7 +128,7 @@ void estimateTimeForMatMulOp(Operation *op, Value a, Value b, bool aTransposed,
   int64_t aN = aShape[aNIndex];
   int64_t aM = aShape[aMIndex];
   // Scanning B.
-  ShapedType bType = b.getType().dyn_cast_or_null<ShapedType>();
+  ShapedType bType = mlir::dyn_cast_or_null<ShapedType>(b.getType());
   assert(bType && bType.hasRank() && "expected shaped type with B rank");
   int64_t bRank = bType.getRank();
   llvm::ArrayRef<int64_t> bShape = bType.getShape();
@@ -202,10 +202,9 @@ void estimateTimeForMatMulOp(Operation *op, Value a, Value b, bool aTransposed,
       msg += " Has broadcast.";
   });
 
-  // Handle case without broadcast. Right now, broadcast cases use the same
-  // method.
-  if (!hasBroadcast ||
-      hasBroadcast /* no perf measurement yet for broadcast case*/) {
+  // Handle case without broadcast (aka !hasBroadcast). Right now, broadcast
+  // cases (aka hasBroadcast) use the same method. So invoke in all cases.
+  if (/*!hasBroadcast || hasBroadcast */ true) {
     // For no broadcast, pick the largest B dimension.
     int64_t B = std::max(aB, bB);
     nnpaEstimatedTime = estimatedTimeForNNPA_MatMul_3ds(B, N, M, K);
@@ -416,44 +415,44 @@ double estimateTimeForUnstickOp(Value oper) {
 bool estimateTimeForOpWithModel(Operation *op, const DimAnalysis *dimAnalysis,
     double &cpuEstimatedTime, double &nnpaEstimatedTime) {
   bool opHasModel = true;
-  if (auto addOp = dyn_cast<ONNXAddOp>(op))
+  if (auto addOp = mlir::dyn_cast<ONNXAddOp>(op))
     estimateTimeForOp(addOp, dimAnalysis, cpuEstimatedTime, nnpaEstimatedTime);
-  else if (auto divOp = dyn_cast<ONNXDivOp>(op))
+  else if (auto divOp = mlir::dyn_cast<ONNXDivOp>(op))
     estimateTimeForOp(divOp, dimAnalysis, cpuEstimatedTime, nnpaEstimatedTime);
-  else if (auto maxOp = dyn_cast<ONNXMaxOp>(op))
+  else if (auto maxOp = mlir::dyn_cast<ONNXMaxOp>(op))
     estimateTimeForOp(maxOp, dimAnalysis, cpuEstimatedTime, nnpaEstimatedTime);
-  else if (auto minOp = dyn_cast<ONNXMinOp>(op))
+  else if (auto minOp = mlir::dyn_cast<ONNXMinOp>(op))
     estimateTimeForOp(minOp, dimAnalysis, cpuEstimatedTime, nnpaEstimatedTime);
-  else if (auto mulOp = dyn_cast<ONNXMulOp>(op))
+  else if (auto mulOp = mlir::dyn_cast<ONNXMulOp>(op))
     estimateTimeForOp(mulOp, dimAnalysis, cpuEstimatedTime, nnpaEstimatedTime);
-  else if (auto powOp = dyn_cast<ONNXPowOp>(op))
+  else if (auto powOp = mlir::dyn_cast<ONNXPowOp>(op))
     estimateTimeForOp(powOp, dimAnalysis, cpuEstimatedTime, nnpaEstimatedTime);
-  else if (auto subOp = dyn_cast<ONNXSubOp>(op))
+  else if (auto subOp = mlir::dyn_cast<ONNXSubOp>(op))
     estimateTimeForOp(subOp, dimAnalysis, cpuEstimatedTime, nnpaEstimatedTime);
   // Unary elementwise NNPA candidate ops.
-  else if (auto expOp = dyn_cast<ONNXExpOp>(op))
+  else if (auto expOp = mlir::dyn_cast<ONNXExpOp>(op))
     estimateTimeForOp(expOp, dimAnalysis, cpuEstimatedTime, nnpaEstimatedTime);
-  else if (auto logOp = dyn_cast<ONNXLogOp>(op))
+  else if (auto logOp = mlir::dyn_cast<ONNXLogOp>(op))
     estimateTimeForOp(logOp, dimAnalysis, cpuEstimatedTime, nnpaEstimatedTime);
-  else if (auto reluOp = dyn_cast<ONNXReluOp>(op))
+  else if (auto reluOp = mlir::dyn_cast<ONNXReluOp>(op))
     estimateTimeForOp(reluOp, dimAnalysis, cpuEstimatedTime, nnpaEstimatedTime);
-  else if (auto sigmoidOp = dyn_cast<ONNXSigmoidOp>(op))
+  else if (auto sigmoidOp = mlir::dyn_cast<ONNXSigmoidOp>(op))
     estimateTimeForOp(
         sigmoidOp, dimAnalysis, cpuEstimatedTime, nnpaEstimatedTime);
-  else if (auto softmaxOp = dyn_cast<ONNXSoftmaxOp>(op))
+  else if (auto softmaxOp = mlir::dyn_cast<ONNXSoftmaxOp>(op))
     estimateTimeForOp(
         softmaxOp, dimAnalysis, cpuEstimatedTime, nnpaEstimatedTime);
-  else if (auto tanhOp = dyn_cast<ONNXTanhOp>(op))
+  else if (auto tanhOp = mlir::dyn_cast<ONNXTanhOp>(op))
     estimateTimeForOp(tanhOp, dimAnalysis, cpuEstimatedTime, nnpaEstimatedTime);
   // Reduce
-  else if (auto reduceMeanOp = dyn_cast<ONNXReduceMeanV13Op>(op))
+  else if (auto reduceMeanOp = mlir::dyn_cast<ONNXReduceMeanV13Op>(op))
     estimateTimeForOp(
         reduceMeanOp, dimAnalysis, cpuEstimatedTime, nnpaEstimatedTime);
   // Matmul.
-  else if (auto matMulOp = dyn_cast<ONNXMatMulOp>(op))
+  else if (auto matMulOp = mlir::dyn_cast<ONNXMatMulOp>(op))
     estimateTimeForOp(
         matMulOp, dimAnalysis, cpuEstimatedTime, nnpaEstimatedTime);
-  else if (auto gemmOp = dyn_cast<ONNXGemmOp>(op))
+  else if (auto gemmOp = mlir::dyn_cast<ONNXGemmOp>(op))
     estimateTimeForOp(gemmOp, dimAnalysis, cpuEstimatedTime, nnpaEstimatedTime);
   else
     opHasModel = false;

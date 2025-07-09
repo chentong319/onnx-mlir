@@ -179,7 +179,7 @@ Subscripts extractSubscripts(StringRef parameterEquation, int64_t rank) {
     }
     appendLetterSubscripts(suffix, subscripts);
   }
-  assert((int64_t)subscripts.size() == rank &&
+  assert(static_cast<int64_t>(subscripts.size()) == rank &&
          "#subscripts == rank after replacing any ellipsis with digits");
   return subscripts;
 }
@@ -223,7 +223,7 @@ FailureOr<Signature> inferSignature(
   for (size_t i = 0; i < inputs.size(); ++i) {
     Value input = inputs[i];
     StringRef equationInput = equationInputs[i];
-    ShapedType type = input.getType().cast<ShapedType>();
+    ShapedType type = mlir::cast<ShapedType>(input.getType());
     auto shape = type.getShape();
     size_t rank = shape.size();
     size_t letters = countLetters(equationInput);

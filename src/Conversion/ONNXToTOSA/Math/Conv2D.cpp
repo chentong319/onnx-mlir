@@ -41,11 +41,11 @@ Value createConvInGroups(PatternRewriter &rewriter, Operation *op,
     const llvm::ArrayRef<int64_t> weightShape, Value &newInput,
     Value &newWeight, Value &bias, const int64_t groups,
     DenseI64ArrayAttr &pads, DenseI64ArrayAttr &strides,
-    DenseI64ArrayAttr &dilations) {
+    DenseI64ArrayAttr &dilations, TypeAttr &accType) {
   // Set up constants outside of loop
   const int64_t sizeOfSliceInput = weightShape[1];
   const int64_t sizeOfSliceKernel = weightShape[0] / groups;
-  auto newInputShape = newInput.getType().cast<ShapedType>().getShape();
+  auto newInputShape = mlir::cast<ShapedType>(newInput.getType()).getShape();
 
   llvm::SmallVector<int64_t, 4> inputSize = {
       newInputShape[0], newInputShape[1], newInputShape[2], sizeOfSliceInput};
@@ -69,17 +69,17 @@ Value createConvInGroups(PatternRewriter &rewriter, Operation *op,
     // Create conv
     Type newConvOutputType = RankedTensorType::get(
         llvm::SmallVector<int64_t, 4>(4, ShapedType::kDynamic),
-        resultType.cast<ShapedType>().getElementType());
+        mlir::cast<ShapedType>(resultType).getElementType());
     Value tempConv2D = tosa::CreateOpAndInfer<mlir::tosa::Conv2DOp>(rewriter,
         op->getLoc(), newConvOutputType, newSliceInput, newSliceWeight,
-        newSliceBias, pads, strides, dilations);
+        newSliceBias, pads, strides, dilations, accType);
     // Add value to vector
     sliceValues.push_back(tempConv2D);
   }
   // Create concat op
   Type newConcatOutputType = RankedTensorType::get(
       llvm::SmallVector<int64_t, 4>(4, ShapedType::kDynamic),
-      resultType.cast<ShapedType>().getElementType());
+      mlir::cast<ShapedType>(resultType).getElementType());
   Value conv2D = tosa::CreateOpAndInfer<mlir::tosa::ConcatOp>(
       rewriter, op->getLoc(), newConcatOutputType, sliceValues, 3);
   return conv2D;
@@ -103,8 +103,8 @@ public:
     auto weights = adaptor.getW();
     auto bias = adaptor.getB();
 
-    auto inputType = input.getType().cast<TensorType>();
-    auto weightType = weights.getType().cast<ShapedType>();
+    auto inputType = mlir::cast<TensorType>(input.getType());
+    auto weightType = mlir::cast<ShapedType>(weights.getType());
 
     // Get shapehelper for autopad attributes
     IndexExprBuilderForTosa createTosaIE(rewriter, convOp->getLoc());
@@ -126,7 +126,7 @@ public:
     // Convert weights [OC,IC,KH,KW] -> [OC,KH,KW,IC]
     Value newWeight = tosaBuilder.transpose(weights, {0, 2, 3, 1});
 
-    if (bias.getType().isa<NoneType>()) {
+    if (mlir::isa<NoneType>(bias.getType())) {
       DenseElementsAttr newBiasAttr = DenseElementsAttr::get(
           RankedTensorType::get({weightShape[0]}, rewriter.getF32Type()),
           {0.0F});
@@ -147,21 +147,25 @@ public:
     DenseI64ArrayAttr newPads =
         rewriter.getDenseI64ArrayAttr({pads[0], pads[2], pads[1], pads[3]});
 
+    Type convType =
+        (resultType.isF16()) ? rewriter.getF16Type() : rewriter.getF32Type();
+    TypeAttr accType = mlir::TypeAttr::get(convType);
+
     // Handle group parameter by creating multiple convs
     const int64_t group = adaptor.getGroup();
     Value conv2D = NULL;
     if (group == 1) {
       Type newConvOutputType = RankedTensorType::get(
           llvm::SmallVector<int64_t, 4>(4, ShapedType::kDynamic),
-          resultType.cast<ShapedType>().getElementType());
+          mlir::cast<ShapedType>(resultType).getElementType());
 
       conv2D = tosa::CreateOpAndInfer<mlir::tosa::Conv2DOp>(rewriter,
           convOp->getLoc(), newConvOutputType, newInput, newWeight, bias,
-          newPads, strides, dilations);
+          newPads, strides, dilations, accType);
     } else {
       conv2D = createConvInGroups(rewriter, convOp, tosaBuilder, resultType,
           weightShape, newInput, newWeight, bias, group, newPads, strides,
-          dilations);
+          dilations, accType);
     }
 
     // Convert output [N,OH,OW,OC] -> [N,OC,OH,OW]

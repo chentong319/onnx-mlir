@@ -41,11 +41,11 @@ public:
     auto keepDims = adaptor.getKeepdims();
     auto noOpIfAxesEmpty = adaptor.getNoopWithEmptyAxes();
 
-    auto outputType = getTypeConverter()
-                          ->convertType(op.getResult().getType())
-                          .cast<RankedTensorType>();
+    auto outputType = mlir::cast<RankedTensorType>(
+        getTypeConverter()->convertType(op.getResult().getType()));
 
-    RankedTensorType inputType = input.getType().dyn_cast<RankedTensorType>();
+    RankedTensorType inputType =
+        mlir::dyn_cast<RankedTensorType>(input.getType());
     if (!inputType)
       return rewriter.notifyMatchFailure(op, "input type not a ranked tensor.");
 
@@ -53,7 +53,8 @@ public:
     llvm::SmallVector<int64_t, 4> axesVec;
     if (isNoneValue(axesValue) && !noOpIfAxesEmpty) {
       // if not present all axes are reduced
-      const int64_t numberOfAxes = input.getType().cast<ShapedType>().getRank();
+      const int64_t numberOfAxes =
+          mlir::cast<ShapedType>(input.getType()).getRank();
       llvm::SmallVector<int64_t> allDims(numberOfAxes);
       std::iota(std::begin(allDims), std::end(allDims), 0);
       axesVec.append(allDims);
@@ -82,7 +83,7 @@ public:
       numElemsOnReducedAxis *= inputType.getShape()[axisVal];
     }
     double divScale = 1.0 / static_cast<double>(numElemsOnReducedAxis);
-    mlir::Type reduceElementType = inputType.getElementType();
+    Type reduceElementType = inputType.getElementType();
 
     auto val = onnx_mlir::tosa::convertReduceOpCommon<mlir::tosa::ReduceSumOp>(
         rewriter, op, outputType, input, newAxesAttr, keepDims,

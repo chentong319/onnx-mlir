@@ -37,9 +37,9 @@ struct ONNXSequenceInsertOpLowering
     // Convert the output type to MemRefType.
     Type convertedType =
         typeConverter->convertType(seqOp.getResult().getType());
-    assert(convertedType && convertedType.isa<MemRefType>() &&
+    assert(convertedType && mlir::isa<MemRefType>(convertedType) &&
            "Failed to convert type to MemRefType");
-    MemRefType outputMemRefType = convertedType.cast<MemRefType>();
+    MemRefType outputMemRefType = mlir::cast<MemRefType>(convertedType);
 
     auto input_sequence = adaptor.getInputSequence();
     auto dimSize = create.mem.dim(input_sequence, 0);
@@ -59,7 +59,7 @@ struct ONNXSequenceInsertOpLowering
       // ToDo (chentong): backward shape inference may help
       positionIE = boundIE;
     } else {
-      positionIE = SymbolIndexExpr(create.krnl.load(adaptor.getPosition()));
+      positionIE = SymIE(create.krnl.load(adaptor.getPosition()));
       // Handle the negative position
       IndexExpr condIE = positionIE < 0;
       IndexExpr fixedPosition = positionIE + boundIE;
@@ -77,13 +77,8 @@ struct ONNXSequenceInsertOpLowering
       // compilation problem due to the unranked tensor even though
       // the loop will not be reached at runtime.
     } else {
-      SmallVector<IndexExpr, 1> lbs;
-      lbs.emplace_back(LiteralIndexExpr(0));
-      SmallVector<IndexExpr, 1> ubs;
-      ubs.emplace_back(positionIE);
-      ValueRange firstLoopDef = createKrnl.defineLoops(1);
-      createKrnl.iterateIE(firstLoopDef, firstLoopDef, lbs, ubs,
-          [&](KrnlBuilder createKrnl, ValueRange indicesLoopInd) {
+      createKrnl.forLoopIE(LitIE(0), positionIE, /*step*/ 1, /*par*/ false,
+          [&](const KrnlBuilder createKrnl, ValueRange indicesLoopInd) {
             auto element =
                 createKrnl.load(adaptor.getInputSequence(), indicesLoopInd[0]);
             createKrnl.seqstore(element, alloc, positionIE);
@@ -91,13 +86,8 @@ struct ONNXSequenceInsertOpLowering
           });
 
       // Copy the elements after the position
-      SmallVector<IndexExpr, 1> lbs1;
-      lbs1.emplace_back(positionIE + 1);
-      SmallVector<IndexExpr, 1> ubs1;
-      ubs1.emplace_back(boundIE);
-      ValueRange secondLoopDef = createKrnl.defineLoops(1);
-      createKrnl.iterateIE(secondLoopDef, secondLoopDef, lbs1, ubs1,
-          [&](KrnlBuilder createKrnl, ValueRange indicesLoopInd) {
+      createKrnl.forLoopIE(positionIE + 1, boundIE, /*step*/ 1, /*par*/ false,
+          [&](const KrnlBuilder createKrnl, ValueRange indicesLoopInd) {
             auto element =
                 createKrnl.load(adaptor.getInputSequence(), indicesLoopInd[0]);
             auto oneIndex = create.math.constantIndex(1);

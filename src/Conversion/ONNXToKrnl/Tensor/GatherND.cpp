@@ -4,7 +4,7 @@
 
 //===---------------- GatherND.cpp - Lowering GatherND Op -----------------===//
 //
-// Copyright 2022-2023 The IBM Research Authors.
+// Copyright 2022-2024 The IBM Research Authors.
 //
 // =============================================================================
 //
@@ -32,10 +32,10 @@ struct ONNXGatherNDOpLowering : public OpConversionPattern<ONNXGatherNDOp> {
 
   // Debug function used to emit code to print the supplied 'indices'.
   static void printIndices(
-      StringRef title, const DimsExpr &indices, KrnlBuilder &createKrnl) {
+      StringRef title, const DimsExpr &indices, const KrnlBuilder &createKrnl) {
     llvm::Twine msg(title + ": (");
     createKrnl.printf(msg.str());
-    int64_t n = (int64_t)indices.size();
+    int64_t n = static_cast<int64_t>(indices.size());
     for (int64_t i = 0; i < n; ++i) {
       Value val = indices[i].getValue();
       createKrnl.printf(" ", val);
@@ -67,10 +67,10 @@ struct ONNXGatherNDOpLowering : public OpConversionPattern<ONNXGatherNDOp> {
     DimsExpr dataDims, indicesDims;
     create.krnlIE.getShapeAsDims(data, dataDims);
     create.krnlIE.getShapeAsDims(indices, indicesDims);
-    auto dataType = data.getType().cast<ShapedType>();
+    auto dataType = mlir::cast<ShapedType>(data.getType());
     int64_t dataRank = dataDims.size();
     int64_t indicesRank = indicesDims.size();
-    auto indicesType = indices.getType().cast<ShapedType>();
+    auto indicesType = mlir::cast<ShapedType>(indices.getType());
     ArrayRef<int64_t> indicesShape = indicesType.getShape();
     int64_t indicesLastDim = indicesShape[indicesRank - 1];
     // ToFix: Handle case in which indicesLastDim is kDynamic.
@@ -80,7 +80,7 @@ struct ONNXGatherNDOpLowering : public OpConversionPattern<ONNXGatherNDOp> {
 
     // Convert the output type to MemRefType.
     Type convertedType = typeConverter->convertType(*op->result_type_begin());
-    assert(convertedType && convertedType.isa<MemRefType>() &&
+    assert(convertedType && mlir::isa<MemRefType>(convertedType) &&
            "Failed to convert type to MemRefType");
     DimsExpr outputDims = shapeHelper.getOutputDims();
 
@@ -122,6 +122,7 @@ struct ONNXGatherNDOpLowering : public OpConversionPattern<ONNXGatherNDOp> {
     // Initialize the index used to store the result values.
     Value iZero = create.math.constantIndex(0);
     Value iOne = create.math.constantIndex(1);
+    // Scalar, ok to use alloca.
     Value storeIndex =
         create.mem.alloca(MemRefType::get({}, rewriter.getIndexType()));
     create.krnl.store(iZero, storeIndex);
@@ -133,16 +134,15 @@ struct ONNXGatherNDOpLowering : public OpConversionPattern<ONNXGatherNDOp> {
     // }
     // output.reshape(outputShape)
     ValueRange loopDef = create.krnl.defineLoops(2);
-    DimsExpr lbs(2, LiteralIndexExpr(0)),
-        ubs = {newIndicesShape[0], newIndicesShape[1]};
+    DimsExpr lbs(2, LitIE(0)), ubs = {newIndicesShape[0], newIndicesShape[1]};
 
     if (emitPrintStmts) {
-      create.krnl.printTensor("reshapedIndices: ", reshapedIndices);
-      create.krnl.printTensor("reshapedData: ", reshapedData);
+      create.krnl.printTensor("reshapedIndices%s%d%e", reshapedIndices);
+      create.krnl.printTensor("reshapedData%s%d%e", reshapedData);
     }
 
     create.krnl.iterateIE(loopDef, loopDef, lbs, ubs,
-        [&](KrnlBuilder &createKrnl, ValueRange loopInd) {
+        [&](const KrnlBuilder &createKrnl, ValueRange loopInd) {
           // Insert code inside the loop.
           IndexExprScope innerLoopScope(createKrnl);
 
@@ -154,7 +154,7 @@ struct ONNXGatherNDOpLowering : public OpConversionPattern<ONNXGatherNDOp> {
           // Access function for 'reshapedData'. The first index is equal to the
           // first loop index.
           DimsExpr reshapedDataAccessFct;
-          IndexExpr ind = SymbolIndexExpr(loopInd[0]);
+          IndexExpr ind = SymIE(loopInd[0]);
           reshapedDataAccessFct.emplace_back(ind);
 
           // The last index of the access function for 'reshapedIndices' is
@@ -162,7 +162,7 @@ struct ONNXGatherNDOpLowering : public OpConversionPattern<ONNXGatherNDOp> {
           // The loaded values from 'reshapedIndices' are the next set of
           // indices to push to the `reshapedDataAccessFct`.
           for (unsigned i = 0; i < indicesLastDim; ++i) {
-            IndexExpr ind = LiteralIndexExpr(i);
+            IndexExpr ind = LitIE(i);
             reshapedIndicesAccessFct.emplace_back(ind);
 
             if (emitPrintStmts)
@@ -185,7 +185,8 @@ struct ONNXGatherNDOpLowering : public OpConversionPattern<ONNXGatherNDOp> {
             // When indices.shape[-1] is equal to (rank(data) - b) the
             // `reshapedDataAccessFct` computed so far has the same number of
             // indices as the rank of 'reshapedData'.
-            assert((int64_t)reshapedDataAccessFct.size() == reshapedDataRank &&
+            assert(static_cast<int64_t>(reshapedDataAccessFct.size()) ==
+                       reshapedDataRank &&
                    "Access function should have the same rank as reshapedData");
 
             if (emitPrintStmts)
@@ -212,10 +213,10 @@ struct ONNXGatherNDOpLowering : public OpConversionPattern<ONNXGatherNDOp> {
             Value last = reshapedDataLastDimExpr.getValue();
             ValueRange innerLoopDef = create.krnl.defineLoops(1);
             create.krnl.iterate(innerLoopDef, innerLoopDef, {zero}, {last},
-                [&](KrnlBuilder &createKrnl, ValueRange innerLoopInd) {
-                  IndexExpr ind = SymbolIndexExpr(innerLoopInd[0]);
+                [&](const KrnlBuilder &createKrnl, ValueRange innerLoopInd) {
+                  IndexExpr ind = SymIE(innerLoopInd[0]);
                   reshapedDataAccessFct.emplace_back(ind);
-                  assert((int64_t)reshapedDataAccessFct.size() ==
+                  assert(static_cast<int64_t>(reshapedDataAccessFct.size()) ==
                              reshapedDataRank &&
                          "Access function should have the same rank as "
                          "reshapedData");

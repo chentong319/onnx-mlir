@@ -64,29 +64,37 @@ struct ONNXGemmOpLowering : public OpConversionPattern<GemmOp> {
     ValueRange loopDef = create.krnl.defineLoops(3);
     SmallVector<Value, 2> outerLoopDef{loopDef[0], loopDef[1]};
     SmallVector<Value, 1> innerLoopDef{loopDef[2]};
-    SmallVector<IndexExpr, 3> loopLbs(3, LiteralIndexExpr(0));
+    SmallVector<IndexExpr, 3> loopLbs(3, LitIE(0));
     IndexExpr outerUb0 = shapeHelper.getOutputDims()[0];
     IndexExpr outerUb1 = shapeHelper.getOutputDims()[1];
     IndexExpr innerUb = shapeHelper.aDims[1];
     SmallVector<IndexExpr, 3> loopUbs{outerUb0, outerUb1, innerUb};
     // Outer loops.
     if (enableParallel) {
-      int64_t parId = 0;
-      create.krnl.parallel(outerLoopDef[0]);
-      onnxToKrnlParallelReport(op, true, parId, loopLbs[parId], loopUbs[parId],
-          "generic GEMM on outer loop");
+      int64_t parId;
+      if (findSuitableParallelDimension(loopLbs, loopUbs, 0, 1, parId,
+              /*min iter for going parallel*/ 4)) {
+        create.krnl.parallel(outerLoopDef[0]);
+        onnxToKrnlParallelReport(op, true, parId, loopLbs[parId],
+            loopUbs[parId], "generic GEMM on outer loop");
+      } else {
+        onnxToKrnlParallelReport(op, false, parId, loopLbs[parId],
+            loopUbs[parId], "not enough work for parallel generic GEMM");
+      }
     }
     create.krnl.iterateIE(loopDef, outerLoopDef, loopLbs, loopUbs,
-        [&](KrnlBuilder &createKrnl, ValueRange outerIndices) {
+        [&](const KrnlBuilder &createKrnl, ValueRange outerIndices) {
           MultiDialectBuilder<KrnlBuilder, MemRefBuilder, MathBuilder> create(
               createKrnl);
           // Create temp, single scalar, no need for default alignment.
+          // Alloca is ok here as its for a scalar, and in the generic version
+          // of GEMM.
           Value red = create.mem.alloca(MemRefType::get({}, elementType));
           // Set to zero.
           create.krnl.store(zeroVal, red);
           // Inner loop.
           create.krnl.iterate({}, innerLoopDef, {}, {},
-              [&](KrnlBuilder &createKrnl, ValueRange innerIndex) {
+              [&](const KrnlBuilder &createKrnl, ValueRange innerIndex) {
                 Value i(outerIndices[0]), j(outerIndices[1]), k(innerIndex[0]);
                 MultiDialectBuilder<KrnlBuilder, MathBuilder> create(
                     createKrnl);
@@ -116,7 +124,7 @@ struct ONNXGemmOpLowering : public OpConversionPattern<GemmOp> {
               // If dim > 1, use loop index, otherwise broadcast on 0's element.
               DimIndexExpr dim(shapeHelper.cDims[x]);
               cAccess.emplace_back(
-                  IndexExpr::select(dim > 1, DimIndexExpr(outerIndices[x]), 0)
+                  IndexExpr::select(dim > 1, DimIE(outerIndices[x]), 0)
                       .getValue());
             }
             Value c = create.krnl.load(adaptor.getC(), cAccess);
@@ -197,14 +205,6 @@ struct ONNXGemmOpLowering : public OpConversionPattern<GemmOp> {
     MemRefType bTileType =
         MemRefType::get({kCacheTile, jCacheTile}, elementType);
     SmallVector<IndexExpr, 1> empty;
-    // Allocate here on heap, only when no parallelism.
-    Value aBuff, bBuff, rBuff;
-    if (!enableParallel) {
-      aBuff = create.mem.alignedAlloc(aTileType, BUFFER_ALIGN);
-      bBuff = create.mem.alignedAlloc(bTileType, BUFFER_ALIGN);
-      if (mustTileR)
-        rBuff = create.mem.alignedAlloc(aTileType, BUFFER_ALIGN);
-    }
 
     // 3) introduce the loops and permute them
     // I, J, K loop.
@@ -230,24 +230,32 @@ struct ONNXGemmOpLowering : public OpConversionPattern<GemmOp> {
       create.krnl.permute({ii1, ii2, ii3, jj1, jj2, jj3, kk1, kk2},
           {/*i*/ 0, 4, 5, /*j*/ 1, 3, 6, /*k*/ 2, 7});
       if (enableParallel) {
-        create.krnl.parallel(ii1);
-        onnxToKrnlParallelReport(
-            op, true, 0, zeroIE, I, "GEMM tiled copy I parallel");
+        int64_t parId;
+        SmallVector<IndexExpr, 1> lb(1, zeroIE), ub(1, I);
+        if (findSuitableParallelDimension(lb, ub, 0, 1, parId,
+                /*min iter for going parallel*/ 4 * iCacheTile)) {
+          create.krnl.parallel(ii1);
+          onnxToKrnlParallelReport(
+              op, true, 0, zeroIE, I, "GEMM tiled copy I parallel");
+        } else {
+          onnxToKrnlParallelReport(op, false, 0, zeroIE, I,
+              "not enough work for GEMM tiled copy I parallel");
+        }
       }
       // Compute: A[i, k] * b[k, j] -> R[i, j])
       create.krnl.iterateIE({ii, jj, kk}, {ii1, jj1}, {zeroIE, zeroIE, zeroIE},
-          {I, J, K}, [&](KrnlBuilder &createKrnl, ValueRange i1_j1_indices) {
+          {I, J, K},
+          [&](const KrnlBuilder &createKrnl, ValueRange i1_j1_indices) {
             Value i1(i1_j1_indices[0]), j1(i1_j1_indices[1]);
-            // If parallel, allocate on stack inside the parallel region.
-            if (enableParallel) {
-              aBuff = create.mem.alignedAlloca(aTileType, BUFFER_ALIGN);
-              bBuff = create.mem.alignedAlloca(bTileType, BUFFER_ALIGN);
-              if (mustTileR)
-                rBuff = create.mem.alignedAlloca(aTileType, BUFFER_ALIGN);
-            }
+            // If parallel, will stay inside, otherwise will migrate out.
+            // Since they are not in an if structure, migration out is not an
+            // issue.
+            Value aBuff = create.mem.alignedAlloc(aTileType, BUFFER_ALIGN);
+            Value bBuff = create.mem.alignedAlloc(bTileType, BUFFER_ALIGN);
+            Value rBuff = create.mem.alignedAlloc(aTileType, BUFFER_ALIGN);
             createKrnl.copyToBuffer(rBuff, R, {i1, j1}, zeroVal, false);
             createKrnl.iterateIE({}, {kk1}, {}, {},
-                [&](KrnlBuilder &createKrnl, ValueRange k1_index) {
+                [&](const KrnlBuilder &createKrnl, ValueRange k1_index) {
                   Value k1(k1_index[0]);
                   if (aTrans)
                     createKrnl.copyToBuffer(aBuff, A, {k1, i1}, zeroVal, true);
@@ -258,7 +266,8 @@ struct ONNXGemmOpLowering : public OpConversionPattern<GemmOp> {
                   else
                     createKrnl.copyToBuffer(bBuff, B, {k1, j1}, zeroVal, false);
                   createKrnl.iterate({}, {jj2, ii2}, {}, {},
-                      [&](KrnlBuilder &createKrnl, ValueRange j2_i2_indices) {
+                      [&](const KrnlBuilder &createKrnl,
+                          ValueRange j2_i2_indices) {
                         Value j2(j2_i2_indices[0]), i2(j2_i2_indices[1]);
                         ArrayRef<int64_t> empty;
                         createKrnl.matmul(aBuff, {i1, k1}, bBuff, {k1, j1},
@@ -285,37 +294,45 @@ struct ONNXGemmOpLowering : public OpConversionPattern<GemmOp> {
       create.krnl.permute({jj1, jj2, jj3, kk1, kk2, ii1, ii2, ii3},
           {/*j*/ 0, 3, 5, /*k*/ 1, 6, /*i*/ 2, 4, 7});
       if (enableParallel) {
-        create.krnl.parallel(jj1);
-        onnxToKrnlParallelReport(
-            op, true, 1, zeroIE, J, "GEMM tiled no copy J parallel");
+        int64_t parId;
+        SmallVector<IndexExpr, 1> lb(1, zeroIE), ub(1, J);
+        if (findSuitableParallelDimension(lb, ub, 0, 1, parId,
+                /*min iter for going parallel*/ 4 * jCacheTile)) {
+          create.krnl.parallel(jj1);
+          onnxToKrnlParallelReport(
+              op, true, 0, zeroIE, J, "GEMM tiled no copy J parallel");
+        } else {
+          onnxToKrnlParallelReport(op, false, 0, zeroIE, J,
+              "not enough work for GEMM tiled no copy J parallel");
+        }
       }
       // Compute: A[i, k] * b[k, j] -> R[i, j])
       // Krnl Rule: must put all the iter bounds at once, but can only put the
       // "not currently used ones" like ii here last. Gave an error when ii was
       // listed first.
       create.krnl.iterateIE({jj, kk, ii}, {jj1, kk1}, {zeroIE, zeroIE, zeroIE},
-          {J, K, I}, [&](KrnlBuilder &createKrnl, ValueRange j1_k1_indices) {
+          {J, K, I},
+          [&](const KrnlBuilder &createKrnl, ValueRange j1_k1_indices) {
             Value j1(j1_k1_indices[0]), k1(j1_k1_indices[1]);
-            // If parallel, allocate on stack inside the parallel region.
-            if (enableParallel) {
-              aBuff = create.mem.alignedAlloca(aTileType, BUFFER_ALIGN);
-              bBuff = create.mem.alignedAlloca(bTileType, BUFFER_ALIGN);
-              if (mustTileR)
-                rBuff = create.mem.alignedAlloca(aTileType, BUFFER_ALIGN);
-            }
+            // If parallel, it will stay inside, otherwise it will migrate out.
+            // Since allocs are not in an if structure, migration is not an
+            // issue.
+            Value aBuff = create.mem.alignedAlloc(aTileType, BUFFER_ALIGN);
+            Value bBuff = create.mem.alignedAlloc(bTileType, BUFFER_ALIGN);
             if (bTrans)
               createKrnl.copyToBuffer(bBuff, B, {j1, k1}, zeroVal, true);
             else
               createKrnl.copyToBuffer(bBuff, B, {k1, j1}, zeroVal, false);
             createKrnl.iterateIE({}, {ii1}, {}, {},
-                [&](KrnlBuilder &createKrnl, ValueRange i1_index) {
+                [&](const KrnlBuilder &createKrnl, ValueRange i1_index) {
                   Value i1(i1_index[0]);
                   if (aTrans)
                     createKrnl.copyToBuffer(aBuff, A, {k1, i1}, zeroVal, true);
                   else
                     createKrnl.copyToBuffer(aBuff, A, {i1, k1}, zeroVal, false);
                   createKrnl.iterate({}, {jj2, ii2}, {}, {},
-                      [&](KrnlBuilder &createKrnl, ValueRange j2_i2_indices) {
+                      [&](const KrnlBuilder &createKrnl,
+                          ValueRange j2_i2_indices) {
                         Value j2(j2_i2_indices[0]), i2(j2_i2_indices[1]);
                         createKrnl.matmul(aBuff, {i1, k1}, bBuff, {k1, j1}, R,
                             {z, z},
@@ -339,12 +356,20 @@ struct ONNXGemmOpLowering : public OpConversionPattern<GemmOp> {
     }
     ValueRange outerLoops = create.krnl.defineLoops(2);
     if (enableParallel) {
-      create.krnl.parallel(outerLoops[0]);
-      onnxToKrnlParallelReport(
-          op, true, 0, zeroIE, I, "outer loop on tiled Transposed Gemm");
+      int64_t parId;
+      SmallVector<IndexExpr, 1> lb(1, zeroIE), ub(1, I);
+      if (findSuitableParallelDimension(lb, ub, 0, 1, parId,
+              /*min iter for going parallel*/ 16)) {
+        create.krnl.parallel(outerLoops[0]);
+        onnxToKrnlParallelReport(
+            op, true, 0, zeroIE, I, "outer loop on tiled Transposed Gemm");
+      } else {
+        onnxToKrnlParallelReport(op, false, 0, zeroIE, I,
+            "not enough work for outer loop on tiled Transposed Gemm");
+      }
     }
     create.krnl.iterateIE(outerLoops, outerLoops, {zeroIE, zeroIE}, {I, J},
-        [&](KrnlBuilder &createKrnl, ValueRange outerIndices) {
+        [&](const KrnlBuilder &createKrnl, ValueRange outerIndices) {
           // Handle alpha/beta coefficients.
           Value res = createKrnl.load(R, outerIndices);
           MathBuilder createMath(createKrnl);
@@ -357,7 +382,7 @@ struct ONNXGemmOpLowering : public OpConversionPattern<GemmOp> {
               // If dim > 1, use loop index, otherwise broadcast on 0's element.
               DimIndexExpr dim(shapeHelper.cDims[x]);
               cAccess.emplace_back(
-                  IndexExpr::select(dim > 1, DimIndexExpr(outerIndices[x]), 0)
+                  IndexExpr::select(dim > 1, DimIE(outerIndices[x]), 0)
                       .getValue());
             }
             Value c = createKrnl.load(adaptor.getC(), cAccess);
@@ -385,9 +410,9 @@ struct ONNXGemmOpLowering : public OpConversionPattern<GemmOp> {
     // Convert the output type to MemRefType.
     Type convertedType =
         this->typeConverter->convertType(*op->result_type_begin());
-    assert(convertedType && convertedType.isa<MemRefType>() &&
+    assert(convertedType && mlir::isa<MemRefType>(convertedType) &&
            "Failed to convert type to MemRefType");
-    MemRefType outputMemRefType = convertedType.cast<MemRefType>();
+    MemRefType outputMemRefType = mlir::cast<MemRefType>(convertedType);
 
     // Insert an allocation and deallocation for the output of this operation.
     Type elementType = outputMemRefType.getElementType();

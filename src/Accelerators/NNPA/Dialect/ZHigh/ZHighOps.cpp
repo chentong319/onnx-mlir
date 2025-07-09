@@ -71,22 +71,22 @@ LogicalResult OpTrait::impl::verifySameOperandsAndResultLayout(Operation *op) {
 namespace onnx_mlir {
 namespace zhigh {
 
-std::vector<mlir::Type> getZHighAuxSplitResultType(
+std::vector<Type> getZHighAuxSplitResultType(
     Value input, int64_t axis, ArrayAttr split) {
-  Type elementType = input.getType().cast<ShapedType>().getElementType();
-  std::vector<mlir::Type> outputTypes;
+  Type elementType = mlir::cast<ShapedType>(input.getType()).getElementType();
+  std::vector<Type> outputTypes;
   if (split.size() == 0) {
     llvm_unreachable("Unsupported split (size==0)");
   } else {
     ArrayRef<int64_t> inputShape =
-        input.getType().cast<RankedTensorType>().getShape();
+        mlir::cast<RankedTensorType>(input.getType()).getShape();
     int64_t splitNum = split.size();
     for (int i = 0; i < splitNum; i++) {
       SmallVector<int64_t> outputShape;
       for (unsigned int dim = 0; dim < inputShape.size(); dim++) {
-        outputShape.emplace_back((dim == axis)
-                                     ? split[dim].cast<IntegerAttr>().getInt()
-                                     : inputShape[dim]);
+        outputShape.emplace_back(
+            (dim == axis) ? mlir::cast<IntegerAttr>(split[dim]).getInt()
+                          : inputShape[dim]);
       }
       outputTypes.emplace_back(RankedTensorType::get(outputShape, elementType));
     }
@@ -111,10 +111,13 @@ Attribute ZTensorEncodingAttr::parse(AsmParser &parser, Type type) {
   ZTensorEncodingAttr::DataLayout dataLayout =
       ZTensorEncodingAttr::DataLayout::UNDEFINED;
 
+  ZTensorEncodingAttr::QuantizedType quantizedType =
+      ZTensorEncodingAttr::QuantizedType::UNDEFINED;
+
   // Process the data from the parsed dictionary value into struct-like data.
   for (const NamedAttribute &attr : dict) {
     if (attr.getName() == "dataLayout") {
-      StringAttr layoutAttr = attr.getValue().dyn_cast<StringAttr>();
+      StringAttr layoutAttr = mlir::dyn_cast<StringAttr>(attr.getValue());
       if (!layoutAttr) {
         parser.emitError(
             parser.getNameLoc(), "expected a string value for data layout");
@@ -155,6 +158,27 @@ Attribute ZTensorEncodingAttr::parse(AsmParser &parser, Type type) {
             << strVal;
         return {};
       }
+    } else if (attr.getName() == "quantizedType") {
+      StringAttr qtypeAttr = mlir::dyn_cast<StringAttr>(attr.getValue());
+      if (!qtypeAttr) {
+        parser.emitError(
+            parser.getNameLoc(), "expected a string value for quantized type");
+        return {};
+      }
+      StringRef strVal = qtypeAttr.getValue();
+      if (strVal.equals_insensitive(QTYPE_DLFLOAT16)) {
+        quantizedType = ZTensorEncodingAttr::QuantizedType::DLFLOAT16;
+      } else if (strVal.equals_insensitive(QTYPE_INT8)) {
+        quantizedType = ZTensorEncodingAttr::QuantizedType::INT8;
+      } else if (strVal.equals_insensitive(QTYPE_WEIGHTS)) {
+        quantizedType = ZTensorEncodingAttr::QuantizedType::WEIGHTS;
+      } else if (strVal.equals_insensitive(QTYPE_UNDEFINED)) {
+        quantizedType = ZTensorEncodingAttr::QuantizedType::UNDEFINED;
+      } else {
+        parser.emitError(parser.getNameLoc(), "unexpected quantized type: ")
+            << strVal;
+        return {};
+      }
     } else {
       parser.emitError(parser.getNameLoc(), "unexpected key: ")
           << attr.getName().str();
@@ -163,7 +187,7 @@ Attribute ZTensorEncodingAttr::parse(AsmParser &parser, Type type) {
   }
   // Construct struct-like storage for attribute.
   return parser.getChecked<ZTensorEncodingAttr>(
-      parser.getContext(), dataLayout);
+      parser.getContext(), dataLayout, quantizedType);
 }
 
 void ZTensorEncodingAttr::print(AsmPrinter &printer) const {
@@ -214,6 +238,27 @@ void ZTensorEncodingAttr::print(AsmPrinter &printer) const {
     break;
   case DataLayout::UNDEFINED:
     llvm_unreachable("Unexpected data layout");
+    break;
+  }
+
+  // QuantizedType is optional.
+  switch (getQuantizedType()) {
+  case QuantizedType::DLFLOAT16:
+    printer << ", quantizedType = ";
+    printer << "\"" << QTYPE_DLFLOAT16 << "\"";
+    break;
+  case QuantizedType::INT8:
+    printer << ", quantizedType = ";
+    printer << "\"" << QTYPE_INT8 << "\"";
+    break;
+  case QuantizedType::WEIGHTS:
+    printer << ", quantizedType = ";
+    printer << "\"" << QTYPE_WEIGHTS << "\"";
+    break;
+  case QuantizedType::UNDEFINED:
+    break;
+  default:
+    llvm_unreachable("Unexpected quantized type");
     break;
   }
   printer << "}>";

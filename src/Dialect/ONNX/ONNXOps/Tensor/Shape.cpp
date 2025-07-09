@@ -52,6 +52,9 @@ LogicalResult ONNXShapeOpShapeHelper::computeShape() {
   Value data = operandAdaptor.getData();
 
   // Compute and store start/end in ONNXShapeOpShapeHelper object.
+  if (!hasShapeAndRank(data)) {
+    return failure();
+  }
   int64_t rank = createIE->getShapedTypeRank(data);
   start = shapeOp.getStart();
   start = normalizeClampedPerSpec(start, rank);
@@ -61,7 +64,7 @@ LogicalResult ONNXShapeOpShapeHelper::computeShape() {
     return op->emitError("Start must not be greater than end");
 
   // Output shape is a 1D vector with "end-start" values
-  DimsExpr outputDims(1, LiteralIndexExpr(end - start));
+  DimsExpr outputDims(1, LitIE(end - start));
   setOutputDims(outputDims);
   return success();
 }
@@ -82,7 +85,7 @@ void ONNXShapeOpShapeHelper::computeSelectedDataShape(
   // Get rank of data operand.
   ONNXShapeOpAdaptor operandAdaptor(shapeOp);
   Value data = operandAdaptor.getData();
-  ShapedType shapedType = data.getType().dyn_cast_or_null<ShapedType>();
+  ShapedType shapedType = mlir::dyn_cast_or_null<ShapedType>(data.getType());
   assert(shapedType && shapedType.hasRank() && "need shaped type with rank");
   int64_t rank = shapedType.getRank();
   // Compute the normalized start/end. Negative value means counting

@@ -4,7 +4,7 @@
 
 //===----- ONNXOpsHelper.hpp.inc - Helper functions for ONNX dialects -----===//
 //
-// Copyright 2019-2023 The IBM Research Authors.
+// Copyright 2019-2024 The IBM Research Authors.
 //
 // =============================================================================
 //
@@ -24,13 +24,29 @@ mlir::Location ONNXLoc(mlir::Operation *op) {
 }
 
 inline bool isNoneValue(mlir::Value value) {
-  return llvm::isa<mlir::NoneType>(value.getType());
+  return MemRefBuilder::isNoneValue(value);
 }
 
 /// Check the defining operation of a value.
 template <typename OP>
 bool definedBy(mlir::Value v) {
-  return !v.isa<mlir::BlockArgument>() && llvm::isa<OP>(v.getDefiningOp());
+  return !mlir::isa<mlir::BlockArgument>(v) && llvm::isa<OP>(v.getDefiningOp());
+}
+
+template <typename OP1, typename OP2>
+bool areDefinedBy(mlir::Value A, mlir::Value B, mlir::Value &matchedOP1, mlir::Value
+  &matchedOP2) {
+  if (A.getDefiningOp<OP1>() && B.getDefiningOp<OP2>()) {
+    matchedOP1 = A;
+    matchedOP2 = B;
+    return true;
+  }
+  if (A.getDefiningOp<OP2>() && B.getDefiningOp<OP1>()) {
+    matchedOP1 = B;
+    matchedOP2 = A;
+    return true;
+  }
+  return false;
 }
 
 // Support for recognizing patterns. Detects if the operation "op" has an input
@@ -61,7 +77,7 @@ bool operandOfOpDefinedBy(mlir::Operation *&matchOp, mlir::Operation *op,
   mlir::Value operand = op->getOperand(matchThisOperandIndex);
   // operand.dump();
   //  Check for a match with definition of operand.
-  if (!operand.isa<mlir::BlockArgument>() &&
+  if (!mlir::isa<mlir::BlockArgument>(operand) &&
       llvm::isa<OP>(operand.getDefiningOp())) {
     matchOperand = operand;
     matchOp = operand.getDefiningOp();
@@ -79,6 +95,68 @@ bool operandOfOpDefinedBy(mlir::Operation *&matchOp, mlir::Operation *op,
   if (operandOfOpDefinedBy<OP>(matchOp, op, dummy, matchThisOperandIndex)) {
     matchOperand0 = op->getOperand(0);
     matchOperand1 = op->getOperand(1);
+    return true;
+  }
+  return false;
+}
+
+// This is to recognize a binary op, e.g. A*B where one of A and B is a constant
+// and the other one is defined by OP.
+// Note: this function can handle the communitive property of the binary op.
+//
+// For example, to recognize this pattern:
+// %x = "onnx.Tanh"()
+// %y = 0.5 * %x    // or %x * 0.5
+//
+// we call
+// ```
+//   ONNXTanhOp tanhOp; 
+//   bool found = matchConstAndOp<ONNXTanhOp>(A, B, 0.5, tanhOp);
+// ```
+// where `A` and `B` are operands of ONNXMul that produces %y.
+template <typename OP>
+bool matchConstAndOp(mlir::Value A, mlir::Value B, double cst, OP &matchOp) {
+  auto opA = A.getDefiningOp<OP>();
+  auto opB = B.getDefiningOp<OP>();
+  if (onnx_mlir::isDenseONNXConstant(A) && onnx_mlir::isConstOf(A, cst) && opB)
+  {
+    matchOp = opB;
+    return true;
+  }
+  if (opA && onnx_mlir::isDenseONNXConstant(B) && onnx_mlir::isConstOf(B, cst))
+  {
+    matchOp = opA;
+    return true;
+  }
+  return false;
+}
+
+// This is to recognize a binary op, e.g. A*B where one of A and B is the given 
+// value and the other one is defined by OP.
+// Note: this function can handle the communitive property of the binary op.
+//
+// For example, to recognize this pattern where %z is one of the inputs of *,
+// and the other input of * is defined by onnx.Tanh:
+// %x = "onnx.Tanh"()
+// %y = %z * %x    // or %x * %z 
+//
+// we call
+// ```
+//   Value z;
+//   ONNXTanhOp tanhOp; 
+//   bool found = matchConstAndOp<ONNXTanhOp>(A, B, z, tanhOp);
+// ```
+// where `A` and `B` are operands of ONNXMul that produces %y.
+template <typename OP>
+bool matchValueAndOp(mlir::Value A, mlir::Value B, mlir::Value matchValue, OP &matchOp) {
+  auto opA = A.getDefiningOp<OP>();
+  auto opB = B.getDefiningOp<OP>();
+  if ((A == matchValue) && opB) {
+    matchOp = opB;
+    return true;
+  }
+  if (opA && (B == matchValue)) {
+    matchOp = opA;
     return true;
   }
   return false;

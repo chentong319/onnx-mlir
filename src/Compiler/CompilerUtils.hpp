@@ -4,7 +4,7 @@
 
 //===-------------------------- CompilerUtils.hpp -------------------------===//
 //
-// Copyright 2019-2023 The IBM Research Authors.
+// Copyright 2019-2024 The IBM Research Authors.
 //
 // =============================================================================
 //
@@ -12,7 +12,8 @@
 //
 //===----------------------------------------------------------------------===//
 
-#pragma once
+#ifndef ONNX_MLIR_COMPILER_UTILS_H
+#define ONNX_MLIR_COMPILER_UTILS_H
 
 #include "onnx-mlir/Compiler/OMCompilerTypes.h"
 
@@ -31,6 +32,23 @@ extern mlir::TimingScope rootTimingScope;
 
 namespace onnx_mlir {
 
+// Values to report the current phase of compilation.
+extern uint64_t CURRENT_COMPILE_PHASE;
+extern uint64_t TOTAL_COMPILE_PHASE;
+
+// When having more phases, let increase TOTAL_COMPILE_PHASE.
+#define SET_TOTAL_COMPILE_PHASE(emissionTarget)                                \
+  {                                                                            \
+    if (emissionTarget == EmitObj)                                             \
+      TOTAL_COMPILE_PHASE = 5;                                                 \
+    else if (emissionTarget == EmitLib)                                        \
+      TOTAL_COMPILE_PHASE = 6;                                                 \
+    else if (emissionTarget == EmitJNI)                                        \
+      TOTAL_COMPILE_PHASE = 8;                                                 \
+    else                                                                       \
+      TOTAL_COMPILE_PHASE = 3;                                                 \
+  }
+
 struct Command {
 
   std::string _path;
@@ -46,6 +64,8 @@ struct Command {
   Command &resetArgs();
   int exec(std::string wdir = "") const;
 };
+
+void showCompilePhase(std::string msg);
 
 // Registers and loads the mlir and onnx-mlir dialects needed to compile
 // end to end. Initializes accelerator(s) if required.
@@ -84,3 +104,4 @@ std::string getTargetFilename(
     const std::string filenameNoExt, EmissionTargetType target);
 
 } // namespace onnx_mlir
+#endif

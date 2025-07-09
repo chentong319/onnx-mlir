@@ -4,7 +4,7 @@
 
 //===------------ IndexExprBuilder.cpp - builder for index expressions ----===//
 //
-// Copyright 2022-2023 The IBM Research Authors.
+// Copyright 2022-2024 The IBM Research Authors.
 //
 // =============================================================================
 //
@@ -84,7 +84,7 @@ namespace onnx_mlir {
 // a dependence on ONNX.
 bool IndexExprBuilder::hasShapeAndRank(Value value) {
   assert(value && "expected a value");
-  ShapedType shapedType = value.getType().dyn_cast_or_null<ShapedType>();
+  ShapedType shapedType = mlir::dyn_cast_or_null<ShapedType>(value.getType());
   return shapedType && shapedType.hasRank();
 }
 
@@ -98,7 +98,7 @@ void IndexExprBuilder::assertHasShapeAndRank(Value value) {
 uint64_t IndexExprBuilder::getShapedTypeRank(Value value) {
   assertHasShapeAndRank(value);
   // Find shaped type size (rank of 0 is scalar).
-  return value.getType().cast<ShapedType>().getRank();
+  return mlir::cast<ShapedType>(value.getType()).getRank();
 }
 
 // Size from 1D attribute array.
@@ -129,15 +129,15 @@ IndexExpr IndexExprBuilder::getIntFromArrayAsLiteral(
   uint64_t size = getArraySize(intAttrArray);
   if (i >= size)
     return UndefinedIndexExpr();
-  int64_t val = (intAttrArray.getValue()[i]).cast<IntegerAttr>().getInt();
-  return LiteralIndexExpr(val);
+  int64_t val = mlir::cast<IntegerAttr>(intAttrArray.getValue()[i]).getInt();
+  return LitIE(val);
 }
 
 IndexExpr IndexExprBuilder::getIntFromArrayAsLiteral(
     ArrayAttr intAttrArray, uint64_t i, int64_t outOfBoundVal) {
   IndexExpr indexExpr = getIntFromArrayAsLiteral(intAttrArray, i);
   // Undefined value are set to default value.
-  return indexExpr.isUndefined() ? LiteralIndexExpr(outOfBoundVal) : indexExpr;
+  return indexExpr.isUndefined() ? LitIE(outOfBoundVal) : indexExpr;
 }
 
 void IndexExprBuilder::getIntFromArrayAsLiterals(
@@ -147,10 +147,11 @@ void IndexExprBuilder::getIntFromArrayAsLiterals(
   if (len == -1) // Meaning pick up the full size of the list.
     len = size;
   else
-    assert((uint64_t)len <= size && "requesting too many elements");
+    assert(
+        static_cast<uint64_t>(len) <= size && "requesting too many elements");
   if (len == 0)
     return;
-  for (uint64_t i = 0; i < (uint64_t)len; ++i) {
+  for (uint64_t i = 0; i < static_cast<uint64_t>(len); ++i) {
     IndexExpr indexExpr = getIntFromArrayAsLiteral(intAttrArray, i);
     assert(!indexExpr.isUndefined() && "expected defined index expr");
     list.emplace_back(indexExpr);
@@ -163,7 +164,7 @@ void IndexExprBuilder::getIntFromArrayAsLiterals(ArrayAttr intAttrArray,
   assert(len >= 0 && "expect a defined size");
   if (len == 0)
     return;
-  for (uint64_t i = 0; i < (uint64_t)len; ++i) {
+  for (uint64_t i = 0; i < static_cast<uint64_t>(len); ++i) {
     IndexExpr indexExpr =
         getIntFromArrayAsLiteral(intAttrArray, i, outOfBoundVal);
     assert(!indexExpr.isUndefined() && "expected defined index expr");
@@ -197,17 +198,17 @@ IndexExpr IndexExprBuilder::getValFromArray(
       assert(arraySize == size && "expected given size to be the same as the "
                                   "one detected from the array value");
   }
-  if (size == ShapedType::kDynamic || i >= (uint64_t)size) {
+  if (size == ShapedType::kDynamic || i >= static_cast<uint64_t>(size)) {
     return UndefinedIndexExpr();
   }
   if (ElementsAttr elementsAttr = getConst(array)) {
     if (isFloat) {
       double floatVal =
           getFloatValue(elementsAttr, elType, i).convertToDouble();
-      return LiteralIndexExpr(floatVal);
+      return LitIE(floatVal);
     } else {
       int64_t intVal = getIntValue(elementsAttr, elType, i).getSExtValue();
-      return LiteralIndexExpr(intVal);
+      return LitIE(intVal);
     }
   }
   // If our scalar array is not a constant; we have a runtime value.
@@ -220,10 +221,10 @@ IndexExpr IndexExprBuilder::getValFromArray(
       if (isFloat) {
         double floatVal =
             getFloatValue(elementsAttr, elType, 0).convertToDouble();
-        return LiteralIndexExpr(floatVal);
+        return LitIE(floatVal);
       } else {
         int64_t intVal = getIntValue(elementsAttr, elType, 0).getSExtValue();
-        return LiteralIndexExpr(intVal);
+        return LitIE(intVal);
       }
     }
     // Otherwise, we can write code.
@@ -234,9 +235,9 @@ IndexExpr IndexExprBuilder::getValFromArray(
     }
     Value castedVal = createMath.castToIndex(val);
     if (makeSymbol)
-      return SymbolIndexExpr(castedVal);
+      return SymIE(castedVal);
     else
-      return DimIndexExpr(castedVal);
+      return DimIE(castedVal);
   }
   return QuestionmarkIndexExpr(isFloat);
 }
@@ -278,21 +279,21 @@ IndexExpr IndexExprBuilder::getIntFromArrayAsSymbolWithOutOfBound(
     Value intArray, uint64_t i, int64_t defaultLiteral) {
   IndexExpr indexExpr = getIntFromArrayAsSymbol(intArray, i);
   // Undefined value are set to default value.
-  return indexExpr.isUndefined() ? LiteralIndexExpr(defaultLiteral) : indexExpr;
+  return indexExpr.isUndefined() ? LitIE(defaultLiteral) : indexExpr;
 }
 
 IndexExpr IndexExprBuilder::getIntFromArrayAsDimWithOutOfBound(
     Value intArray, uint64_t i, int64_t defaultLiteral) {
   IndexExpr indexExpr = getIntFromArrayAsDim(intArray, i);
   // Undefined value are set to default value.
-  return indexExpr.isUndefined() ? LiteralIndexExpr(defaultLiteral) : indexExpr;
+  return indexExpr.isUndefined() ? LitIE(defaultLiteral) : indexExpr;
 }
 
 IndexExpr IndexExprBuilder::getFloatFromArrayAsNonAffineWithOutOfBound(
     Value floatArray, uint64_t i, double defaultLiteral) {
   IndexExpr indexExpr = getFloatFromArrayAsNonAffine(floatArray, i);
   // Undefined value are set to default value.
-  return indexExpr.isUndefined() ? LiteralIndexExpr(defaultLiteral) : indexExpr;
+  return indexExpr.isUndefined() ? LitIE(defaultLiteral) : indexExpr;
 }
 
 void IndexExprBuilder::getIntFromArrayAsSymbols(
@@ -302,10 +303,11 @@ void IndexExprBuilder::getIntFromArrayAsSymbols(
   if (len == -1) // Meaning pick up the full size of the list.
     len = size;
   else
-    assert((uint64_t)len <= size && "requesting too many elements");
+    assert(
+        static_cast<uint64_t>(len) <= size && "requesting too many elements");
   if (len == 0)
     return;
-  for (uint64_t i = 0; i < (uint64_t)len; ++i) {
+  for (uint64_t i = 0; i < static_cast<uint64_t>(len); ++i) {
     IndexExpr indexExpr = getIntFromArrayAsSymbol(intArray, i);
     assert(!indexExpr.isUndefined() && "expected defined index expr");
     list.emplace_back(indexExpr);
@@ -319,10 +321,11 @@ void IndexExprBuilder::getIntFromArrayAsDims(
   if (len == -1) // Meaning pick up the full size of the list.
     len = size;
   else
-    assert((uint64_t)len <= size && "requesting too many elements");
+    assert(
+        static_cast<uint64_t>(len) <= size && "requesting too many elements");
   if (len == 0)
     return;
-  for (uint64_t i = 0; i < (uint64_t)len; ++i) {
+  for (uint64_t i = 0; i < static_cast<uint64_t>(len); ++i) {
     IndexExpr indexExpr = getIntFromArrayAsDim(intArray, i);
     assert(!indexExpr.isUndefined() && "expected defined index expr");
     list.emplace_back(indexExpr);
@@ -336,10 +339,11 @@ void IndexExprBuilder::getFloatFromArrayAsNonAffine(
   if (len == -1) // Meaning pick up the full size of the list.
     len = size;
   else
-    assert((uint64_t)len <= size && "requesting too many elements");
+    assert(
+        static_cast<uint64_t>(len) <= size && "requesting too many elements");
   if (len == 0)
     return;
-  for (uint64_t i = 0; i < (uint64_t)len; ++i) {
+  for (uint64_t i = 0; i < static_cast<uint64_t>(len); ++i) {
     IndexExpr indexExpr = getFloatFromArrayAsNonAffine(floatArray, i);
     assert(!indexExpr.isUndefined() && "expected defined index expr");
     list.emplace_back(indexExpr);
@@ -364,7 +368,7 @@ bool IndexExprBuilder::isLiteralShape(Value tensorOrMemrefValue) {
 int64_t IndexExprBuilder::getShape(Value tensorOrMemrefValue, uint64_t i) {
   uint64_t rank = getShapedTypeRank(tensorOrMemrefValue);
   assert(i < rank && "expected index smaller than memref rank");
-  return tensorOrMemrefValue.getType().cast<ShapedType>().getShape()[i];
+  return mlir::cast<ShapedType>(tensorOrMemrefValue.getType()).getShape()[i];
 }
 
 // Get index expressions from tensor/memref shape.
@@ -373,7 +377,7 @@ IndexExpr IndexExprBuilder::getShapeAsLiteral(
   int64_t shape = getShape(tensorOrMemrefValue, i);
   assert(
       shape != ShapedType::kDynamic && "expected compile time constant shape");
-  return LiteralIndexExpr(shape);
+  return LitIE(shape);
 }
 
 IndexExpr IndexExprBuilder::getShapeAsSymbol(
@@ -381,7 +385,7 @@ IndexExpr IndexExprBuilder::getShapeAsSymbol(
   if (isLiteralShape(tensorOrMemrefValue, i))
     return getShapeAsLiteral(tensorOrMemrefValue, i);
   if (Value val = getShapeVal(tensorOrMemrefValue, i))
-    return SymbolIndexExpr(val);
+    return SymIE(val);
   return QuestionmarkIndexExpr(tensorOrMemrefValue, i);
 }
 
@@ -390,7 +394,7 @@ IndexExpr IndexExprBuilder::getShapeAsDim(
   if (isLiteralShape(tensorOrMemrefValue, i))
     return getShapeAsLiteral(tensorOrMemrefValue, i);
   if (Value val = getShapeVal(tensorOrMemrefValue, i))
-    return DimIndexExpr(val);
+    return DimIE(val);
   return QuestionmarkIndexExpr(tensorOrMemrefValue, i);
 }
 
@@ -430,7 +434,7 @@ IndexExpr IndexExprBuilder::isTileFull(
   // However, if UB is divisible by Block, then its full no matter what.
   if (UB.isLiteral() && (UB.getLiteral() % block.getLiteral() == 0)) {
     // Last tile is guaranteed to be full because UB is divisible by block.
-    return LiteralIndexExpr(1); // 1 >= 0 is true
+    return LitIE(1); // 1 >= 0 is true
   }
   // True if i <= (UB - block), namely UB - block - i >= 0.
   // Affine expressions compared to >= 0

@@ -53,8 +53,8 @@ getWeightPack<ONNXLSTMOp, LstmWeightPack>(
   // direction
   StringRef direction = op->getDirection();
 
-  ArrayRef<int64_t> wShape = W.getType().cast<ShapedType>().getShape();
-  Type elementType = W.getType().cast<ShapedType>().getElementType();
+  ArrayRef<int64_t> wShape = mlir::cast<ShapedType>(W.getType()).getShape();
+  Type elementType = mlir::cast<ShapedType>(W.getType()).getElementType();
   int64_t hiddenSize = wShape[1] / 4;
   int64_t inputSize = wShape[2];
 
@@ -136,8 +136,8 @@ std::tuple<LstmBiasPack, LstmBiasPack> getBiasPack<ONNXLSTMOp, LstmBiasPack>(
 
   // Split B.
   if (!isNoneValue(B)) {
-    ArrayRef<int64_t> bShape = B.getType().cast<ShapedType>().getShape();
-    Type elementType = B.getType().cast<ShapedType>().getElementType();
+    ArrayRef<int64_t> bShape = mlir::cast<ShapedType>(B.getType()).getShape();
+    Type elementType = mlir::cast<ShapedType>(B.getType()).getElementType();
     int64_t hiddenSize = bShape[1] / 8;
 
     // MemRef types.
@@ -195,8 +195,8 @@ std::tuple<LstmBiasPack, LstmBiasPack> getBiasPack<ONNXLSTMOp, LstmBiasPack>(
 
   // Split P.
   if (!isNoneValue(P)) {
-    ArrayRef<int64_t> pShape = P.getType().cast<ShapedType>().getShape();
-    Type elementType = P.getType().cast<ShapedType>().getElementType();
+    ArrayRef<int64_t> pShape = mlir::cast<ShapedType>(P.getType()).getShape();
+    Type elementType = mlir::cast<ShapedType>(P.getType()).getElementType();
     int64_t hiddenSize = pShape[1] / 3;
 
     // MemRef types.
@@ -293,7 +293,8 @@ LstmState allocAndInitializeStates<ONNXLSTMOp, LstmState>(
   initializeIntermediateStates(rewriter, loc, state.forwardHt, state.reverseHt,
       state.forwardCt, state.reverseCt, operandAdaptor.getInitialH(),
       operandAdaptor.getInitialC(),
-      operandAdaptor.getX().getType().cast<RankedTensorType>().getElementType(),
+      mlir::cast<RankedTensorType>(operandAdaptor.getX().getType())
+          .getElementType(),
       direction, /*onlyHidden=*/false);
   return state;
 }
@@ -315,18 +316,18 @@ void calculateState<LstmState, LstmActivationPack, LstmWeightPack,
 
   MultiDialectBuilder<OnnxBuilder, StablehloBuilder> create(rewriter, loc);
 
-  ArrayRef<int64_t> xtShape = Xt.getType().cast<ShapedType>().getShape();
+  ArrayRef<int64_t> xtShape = mlir::cast<ShapedType>(Xt.getType()).getShape();
   int64_t batchSize = xtShape[0];
 
   // Get Ht, Ct.
   Value Ht = (isForward) ? state.forwardHt : state.reverseHt;
   Value Ct = (isForward) ? state.forwardCt : state.reverseCt;
 
-  ArrayRef<int64_t> htShape = Ht.getType().cast<ShapedType>().getShape();
+  ArrayRef<int64_t> htShape = mlir::cast<ShapedType>(Ht.getType()).getShape();
   int64_t hiddenSize = htShape[1];
 
   // Frequently used types.
-  RankedTensorType matrixType = Ht.getType().cast<RankedTensorType>();
+  RankedTensorType matrixType = mlir::cast<RankedTensorType>(Ht.getType());
   Type elementType = matrixType.getElementType();
   RankedTensorType matrixAllGatesType =
       RankedTensorType::get({batchSize, 4 * hiddenSize}, elementType);
@@ -452,10 +453,11 @@ void stateToOutput<ONNXLSTMOp, LstmState>(ConversionPatternRewriter &rewriter,
         outputs.emplace_back(create.onnx.concat(
             op->getY().getType(), ValueRange(state.reverseAllH), 0));
       } else {
-        auto outputShape = op->getY().getType().cast<ShapedType>().getShape();
+        auto outputShape =
+            mlir::cast<ShapedType>(op->getY().getType()).getShape();
         RankedTensorType singleDirectionType = RankedTensorType::get(
             {outputShape[0], 1, outputShape[2], outputShape[3]},
-            op->getY().getType().cast<ShapedType>().getElementType());
+            mlir::cast<ShapedType>(op->getY().getType()).getElementType());
         outputs.emplace_back(create.onnx.concat(op->getY().getType(),
             {create.onnx.concat(
                  singleDirectionType, ValueRange(state.forwardAllH), 0),
@@ -495,8 +497,8 @@ void stateToOutput<ONNXLSTMOp, LstmState>(ConversionPatternRewriter &rewriter,
 template <>
 void calculateStateWithUnroll<ONNXLSTMOp, LstmState, LstmActivationPack,
     LstmWeightPack, LstmBiasPack>(mlir::ConversionPatternRewriter &rewriter,
-    mlir::Location loc, llvm::StringRef direction, int64_t sequenceDimSize,
-    Value X, LstmState &state, LstmActivationPack activationForward,
+    Location loc, llvm::StringRef direction, int64_t sequenceDimSize, Value X,
+    LstmState &state, LstmActivationPack activationForward,
     LstmActivationPack activationReverse, LstmWeightPack weightForward,
     LstmWeightPack weightReverse, LstmBiasPack biasForward,
     LstmBiasPack biasReverse, Value sequenceLens, Value initialH) {
@@ -504,10 +506,10 @@ void calculateStateWithUnroll<ONNXLSTMOp, LstmState, LstmActivationPack,
 
   if (direction == FORWARD || direction == BIDIRECTIONAL) {
     for (int64_t i = 0; i < sequenceDimSize; i++) {
-      mlir::Value directionIV = create.onnx.constantInt64({0});
-      mlir::Value sequenceIV = create.onnx.constantInt64({i});
+      Value directionIV = create.onnx.constantInt64({0});
+      Value sequenceIV = create.onnx.constantInt64({i});
       // Get a slice of X at the current timestep.
-      mlir::Value Xt = emitXSliceAt(rewriter, loc, X, sequenceIV);
+      Value Xt = emitXSliceAt(rewriter, loc, X, sequenceIV);
       // Emit calculation for one RNN step.
       calculateState<LstmState, LstmActivationPack, LstmWeightPack,
           LstmBiasPack>(rewriter, loc, Xt, state, activationForward,
@@ -518,12 +520,12 @@ void calculateStateWithUnroll<ONNXLSTMOp, LstmState, LstmActivationPack,
 
   if (direction == REVERSE || direction == BIDIRECTIONAL) {
     for (int64_t i = 0; i < sequenceDimSize; i++) {
-      mlir::Value directionIV =
+      Value directionIV =
           create.onnx.constantInt64({(direction == REVERSE) ? 0 : 1});
-      mlir::Value reverseSequenceIV =
+      Value reverseSequenceIV =
           create.onnx.constantInt64({sequenceDimSize - i - 1});
       // Get a slice of X at the current timestep.
-      mlir::Value Xt = emitXSliceAt(rewriter, loc, X, reverseSequenceIV);
+      Value Xt = emitXSliceAt(rewriter, loc, X, reverseSequenceIV);
       // Emit calculation for one RNN step.
       calculateState<LstmState, LstmActivationPack, LstmWeightPack,
           LstmBiasPack>(rewriter, loc, Xt, state, activationReverse,
@@ -536,16 +538,16 @@ void calculateStateWithUnroll<ONNXLSTMOp, LstmState, LstmActivationPack,
 template <>
 void calculateStateWithLoop<ONNXLSTMOp, LstmState, LstmActivationPack,
     LstmWeightPack, LstmBiasPack>(mlir::ConversionPatternRewriter &rewriter,
-    mlir::Location loc, llvm::StringRef direction, int64_t sequenceDimSize,
-    Value X, LstmState &state, LstmActivationPack activationForward,
+    Location loc, llvm::StringRef direction, int64_t sequenceDimSize, Value X,
+    LstmState &state, LstmActivationPack activationForward,
     LstmActivationPack activationReverse, LstmWeightPack weightForward,
     LstmWeightPack weightReverse, LstmBiasPack biasForward,
     LstmBiasPack biasReverse, Value sequenceLens, Value initialH) {
   MultiDialectBuilder<OnnxBuilder> create(rewriter, loc);
 
   if (direction == FORWARD || direction == BIDIRECTIONAL) {
-    mlir::Value directionIV = create.onnx.constantInt64({0});
-    mlir::Value sequenceIV = create.onnx.constantInt64({0});
+    Value directionIV = create.onnx.constantInt64({0});
+    Value sequenceIV = create.onnx.constantInt64({0});
     SmallVector<Value> operands = {
         sequenceIV, state.allHForward, state.forwardHt, state.forwardCt};
     SmallVector<Type> returnedTypes = {sequenceIV.getType(),
@@ -563,7 +565,7 @@ void calculateStateWithLoop<ONNXLSTMOp, LstmState, LstmActivationPack,
       OpBuilder::InsertionGuard guard(rewriter);
       rewriter.setInsertionPointToStart(&condBlock);
       BlockArgument lhs = condBlock.getArgument(0);
-      mlir::Value rhs = create.onnx.constantInt64({sequenceDimSize});
+      Value rhs = create.onnx.constantInt64({sequenceDimSize});
       Value compareResult = rewriter.create<::stablehlo::CompareOp>(
           loc, lhs, rhs, ::stablehlo::ComparisonDirection::LT);
       compareResult = rewriter.create<::stablehlo::ReshapeOp>(
@@ -581,12 +583,12 @@ void calculateStateWithLoop<ONNXLSTMOp, LstmState, LstmActivationPack,
       state.allHForward = allH;
       state.forwardHt = ht;
       state.forwardCt = ct;
-      mlir::Value Xt = emitXSliceAt(rewriter, loc, X, seqIV);
+      Value Xt = emitXSliceAt(rewriter, loc, X, seqIV);
       calculateState<LstmState, LstmActivationPack, LstmWeightPack,
           LstmBiasPack>(rewriter, loc, Xt, state, activationForward,
           weightForward, biasForward, seqIV, directionIV, sequenceLens,
           initialH, /*enableUnroll=*/false, /*isForward=*/true);
-      mlir::Value one = create.onnx.constantInt64({1});
+      Value one = create.onnx.constantInt64({1});
       Value newSeqIV = create.onnx.add(seqIV, one);
       rewriter.create<::stablehlo::ReturnOp>(loc,
           ValueRange(
@@ -598,10 +600,9 @@ void calculateStateWithLoop<ONNXLSTMOp, LstmState, LstmActivationPack,
   }
 
   if (direction == REVERSE || direction == BIDIRECTIONAL) {
-    mlir::Value directionIV =
+    Value directionIV =
         create.onnx.constantInt64({(direction == REVERSE) ? 0 : 1});
-    mlir::Value reverseSequenceIV =
-        create.onnx.constantInt64({sequenceDimSize - 1});
+    Value reverseSequenceIV = create.onnx.constantInt64({sequenceDimSize - 1});
 
     SmallVector<Value> operands = {
         reverseSequenceIV, state.allHReverse, state.reverseHt, state.reverseCt};
@@ -620,7 +621,7 @@ void calculateStateWithLoop<ONNXLSTMOp, LstmState, LstmActivationPack,
       OpBuilder::InsertionGuard guard(rewriter);
       rewriter.setInsertionPointToStart(&condBlock);
       BlockArgument lhs = condBlock.getArgument(0);
-      mlir::Value rhs = create.onnx.constantInt64({0});
+      Value rhs = create.onnx.constantInt64({0});
       Value compareResult = rewriter.create<::stablehlo::CompareOp>(
           loc, lhs, rhs, ::stablehlo::ComparisonDirection::GE);
       compareResult = rewriter.create<::stablehlo::ReshapeOp>(
@@ -638,12 +639,12 @@ void calculateStateWithLoop<ONNXLSTMOp, LstmState, LstmActivationPack,
       state.allHReverse = allH;
       state.reverseHt = ht;
       state.reverseCt = ct;
-      mlir::Value Xt = emitXSliceAt(rewriter, loc, X, revseqIV);
+      Value Xt = emitXSliceAt(rewriter, loc, X, revseqIV);
       calculateState<LstmState, LstmActivationPack, LstmWeightPack,
           LstmBiasPack>(rewriter, loc, Xt, state, activationReverse,
           weightReverse, biasReverse, revseqIV, directionIV, sequenceLens,
           initialH, /*enableUnroll=*/false, /*isForward=*/false);
-      mlir::Value one = create.onnx.constantInt64({1});
+      Value one = create.onnx.constantInt64({1});
       Value newrevseqIV = create.onnx.sub(revseqIV, one);
       rewriter.create<::stablehlo::ReturnOp>(
           loc, ValueRange({newrevseqIV, state.allHReverse, state.reverseHt,

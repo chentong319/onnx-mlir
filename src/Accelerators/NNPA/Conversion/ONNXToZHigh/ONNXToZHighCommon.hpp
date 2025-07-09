@@ -2,9 +2,9 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-//===---------- ONNXToZHigh.hpp - Common functions in ONNXToZHigh ---------===//
+//===---- ONNXToZHighCommon.hpp - Common functions in ONNXToZHigh ---------===//
 //
-// Copyright 2019-2020 The IBM Research Authors.
+// Copyright 2019-2024 The IBM Research Authors.
 //
 // =============================================================================
 //
@@ -12,13 +12,14 @@
 //
 //===----------------------------------------------------------------------===//
 
-#pragma once
+#ifndef ONNX_MLIR_ZHIGH_COMMON_H
+#define ONNX_MLIR_ZHIGH_COMMON_H
 
 #include "llvm/ADT/STLExtras.h"
 
 #include "src/Accelerators/NNPA/Conversion/ONNXToZHigh/ONNXLegalityCheck.hpp"
 #include "src/Accelerators/NNPA/Support/LayoutHelper.hpp"
-#include "src/Accelerators/NNPA/Support/NNPALimit.h"
+#include "src/Accelerators/NNPA/Support/NNPALimit.hpp"
 #include "src/Dialect/ONNX/ONNXDimAnalysis.hpp"
 
 namespace onnx_mlir {
@@ -29,9 +30,16 @@ const std::string NNPA_DEVICE = "nnpa";
 
 bool isEnableScalarBcastBinary();
 
-struct OnnxToZHighLoweringConfiguration {
+// Populated by configureONNXToZHighLoweringPass().
+struct ONNXToZHighLoweringConfiguration {
   static int optReportNNPAUnsupportedOps;
   static int reportOnNNPAUnsupportedOps;
+  static bool isDynQuant;
+  struct Quant {
+    static bool isActivationSym;
+    static bool isWeightSym;
+    static llvm::SmallVector<std::string> opTypes;
+  };
 };
 
 template <typename OP_TYPE>
@@ -65,14 +73,16 @@ void addDynamicallyLegalOpFor(mlir::ConversionTarget *target,
       bool exceedLimit =
           llvm::any_of(genericOp->getOperands(), [](mlir::Value operand) {
             if (auto valueType =
-                    operand.getType().dyn_cast<mlir::ShapedType>()) {
+                    mlir::dyn_cast<mlir::ShapedType>(operand.getType())) {
               // Check if static dimension size exceeds zDNN limitations
               llvm::ArrayRef<int64_t> valueShape = valueType.getShape();
-              if (llvm::any_of(valueShape, [](int64_t dim) {
-                    return (!mlir::ShapedType::isDynamic(dim)) &&
-                           (dim > NNPA_MAXIMUM_DIMENSION_INDEX_SIZE);
-                  }))
-                return true;
+              int64_t valueRank = valueShape.size();
+              for (int64_t i = 0; i < valueRank; ++i) {
+                int64_t dim = valueShape[i];
+                if (!mlir::ShapedType::isDynamic(dim) &&
+                    dim > NNPAGetMaxForDim(i, valueRank))
+                  return true;
+              }
             }
             return false;
           });
@@ -97,7 +107,7 @@ mlir::Value emitONNXTransposeWithType(mlir::Location loc,
     mlir::ArrayRef<int64_t> perms);
 
 /// Split a tensor along an axis in which each chunk has a size of
-/// NNPA_MAXIMUM_DIMENSION_INDEX_SIZE and the last chucnk can be smaller.
+/// NNPAGetMaxForDim and the last chuck can be smaller.
 mlir::ValueRange splitAlongAxis(
     onnx_mlir::MultiDialectBuilder<onnx_mlir::OnnxBuilder> &create,
     mlir::Value X, int64_t axis);
@@ -113,3 +123,4 @@ mlir::Value getDynShape(
     mlir::Location loc, mlir::PatternRewriter &rewriter, mlir::Value x);
 
 } // namespace onnx_mlir
+#endif

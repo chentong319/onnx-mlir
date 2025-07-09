@@ -4,7 +4,7 @@
 
 //===---------- ONNXLegalityCheck.cpp - Check legality for ONNX ops -------===//
 //
-// Copyright 2019-2023 The IBM Research Authors.
+// Copyright 2019-2024 The IBM Research Authors.
 //
 // =============================================================================
 //
@@ -15,7 +15,8 @@
 
 #include "src/Accelerators/NNPA/Conversion/ONNXToZHigh/ONNXLegalityCheck.hpp"
 #include "src/Accelerators/NNPA/Conversion/ONNXToZHigh/ONNXToZHighCommon.hpp"
-#include "src/Accelerators/NNPA/Support/NNPALimit.h"
+#include "src/Accelerators/NNPA/Dialect/ZHigh/ZHighOps/ShapeHelper.hpp"
+#include "src/Accelerators/NNPA/Support/NNPALimit.hpp"
 #include "src/Compiler/CompilerOptions.hpp"
 #include "src/Conversion/ONNXToKrnl/RNN/RNNBase.hpp"
 #include "src/Dialect/ONNX/ONNXDimAnalysis.hpp"
@@ -26,7 +27,7 @@ using namespace onnx_mlir;
 
 /// Report NNPA unsupported case.
 bool onnxToZHighUnsupportedReport(Operation *op, const std::string &message) {
-  if (OnnxToZHighLoweringConfiguration::reportOnNNPAUnsupportedOps &&
+  if (ONNXToZHighLoweringConfiguration::reportOnNNPAUnsupportedOps &&
       !message.empty()) {
     StringAttr opName = op->getName().getIdentifier();
     std::string nodeNameStr = getNodeNameInPresenceOfOpt(op);
@@ -37,50 +38,31 @@ bool onnxToZHighUnsupportedReport(Operation *op, const std::string &message) {
 }
 
 /// Report incompatibility with NNPA Level.
-bool onnxToZHighInCompatibilityReport(Operation *op) {
-  std::string onnxMlirNnpaLevel(NNPA_Z16);
-  std::string message =
-      "onnx-mlir NNPA level (" + onnxMlirNnpaLevel +
-      ") is not compatible with  NNPA level specified by '-mcpu'(" + mcpu +
-      ").";
-  return onnxToZHighUnsupportedReport(op, message);
+bool onnxToZHighInCompatibilityReport(
+    Operation *op, const std::string &message) {
+  std::string compilerNNPALevelStr = getNNPAString(getNNPAFromFlags());
+  std::string errorMessage =
+      "onnx-mlir NNPA level \"" + message + "\" is not compatible with  " +
+      "NNPA level specified by \"" + compilerNNPALevelStr + "\".";
+  return onnxToZHighUnsupportedReport(op, errorMessage);
 }
 
-/// Convert the input NNPA level, ie. "z16", to a floating point value
-/// representing the level, ie. "16.0".
-float convertNNPALevel(std::string inputNNPALevel) {
-  float retNNPAFloat = 0;
-  try {
-    retNNPAFloat = std::strtof(
-        inputNNPALevel.substr(1, inputNNPALevel.size()).c_str(), NULL);
-  } catch (...) {
-    retNNPAFloat = 0;
-  }
-  return retNNPAFloat;
-}
-
-/// A function to check whether the input NNPA level, ie. "z16", is compatible
-/// with the current NNPA level.
-bool isCompatibleWithNNPALevel(std::string inputNNPALevel) {
-  float inLevel = convertNNPALevel(inputNNPALevel);
-  float mcpuLevel = convertNNPALevel(mcpu);
-  if (inLevel == 0 && mcpuLevel == 0)
-    return false;
-  return inLevel <= mcpuLevel;
+bool onnxToZHighInCompatibilityReport(Operation *op, NNPALevel level) {
+  return onnxToZHighInCompatibilityReport(op, getNNPAString(level));
 }
 
 /// A function to check whether a value's element type is valid for zAIU or not.
 /// zAIU supports only F16, F32 and BFLOAT. Since MLIR does not support BFLOAT,
 /// we check F16 and F32 here only. zAIU only supports rank in range of (0, 4].
 bool isValidElementTypeAndRank(Operation *op, Value val, bool donotCheckRank) {
-  if (val.getType().isa<NoneType>())
+  if (mlir::isa<NoneType>(val.getType()))
     return true;
-  if (auto valueType = val.getType().dyn_cast_or_null<ShapedType>()) {
+  if (auto valueType = mlir::dyn_cast_or_null<ShapedType>(val.getType())) {
     Type elementType = (valueType) ? valueType.getElementType() : val.getType();
     // Element type must be in 16 or F32.
-    if (elementType.isa<FloatType>() &&
-        (elementType.cast<FloatType>().getWidth() == 16 ||
-            elementType.cast<FloatType>().getWidth() == 32)) {
+    if (mlir::isa<FloatType>(elementType) &&
+        (mlir::cast<FloatType>(elementType).getWidth() == 16 ||
+            mlir::cast<FloatType>(elementType).getWidth() == 32)) {
       if (donotCheckRank)
         return true;
       // Rank must be in range of (0, 4].
@@ -89,7 +71,7 @@ bool isValidElementTypeAndRank(Operation *op, Value val, bool donotCheckRank) {
         return onnxToZHighUnsupportedReport(op, message);
       }
       int64_t rank = valueType.getRank();
-      if ((rank == 0) || (rank > 5)) {
+      if ((rank == 0) || (rank > 4)) {
         std::string message =
             "Rank " + std::to_string(rank) +
             " is not supported. zAIU only supports rank in range of (0, 4].";
@@ -107,13 +89,14 @@ bool isValidElementTypeAndRank(Operation *op, Value val, bool donotCheckRank) {
 
 /// Common legality check for pooling ops.
 template <typename POOLOP, typename POOLOPAdaptor, typename POOLOPShapeHelper>
-bool checkLegalityPoolOpsCommon(POOLOP op, Value Y) {
+bool checkLegalityPoolOpsCommon(
+    POOLOP op, Value Y, const DimAnalysis *dimAnalysis) {
   POOLOPShapeHelper shapeHelper(op.getOperation(), {});
   shapeHelper.computeShapeAndAssertOnFailure();
   Value X = op.getX();
   int64_t ceilMode = op.getCeilMode();
-  ShapedType inputType = X.getType().cast<ShapedType>();
-  ShapedType outputType = Y.getType().cast<ShapedType>();
+  ShapedType inputType = mlir::cast<ShapedType>(X.getType());
+  ShapedType outputType = mlir::cast<ShapedType>(Y.getType());
   ArrayRef<int64_t> shapeInput = inputType.getShape();
   ArrayRef<int64_t> shapeOutput = outputType.getShape();
 
@@ -151,12 +134,7 @@ bool checkLegalityPoolOpsCommon(POOLOP op, Value Y) {
   // Check "MaxPool2D/AvgPool2D Parameter Restrictions". These restrictions are
   // described in "zDNN API Reference". Input tensor N(batchNum) and C(Channel)
   // dimensions must always match the output tensor's respective dimensions.
-  // When unknown dimensions are included, the restrictions are not checked and
-  // error messages are generated at runtime in zDNN if it doesn't meet.
-  //  if ((inputType.hasStaticShape() && outputType.hasStaticShape()) &&
-  //      (shapeInput[0] != shapeOutput[0] || shapeInput[1] != shapeOutput[1]))
-  //      {
-  if (shapeInput[0] != shapeOutput[0] || shapeInput[1] != shapeOutput[1]) {
+  if (!dimAnalysis->sameDim(X, 0, Y, 0) || !dimAnalysis->sameDim(X, 1, Y, 1)) {
     std::string message =
         "Batch dimension in input tensor (" + std::to_string(shapeInput[0]) +
         ") and in output tensor (" + std::to_string(shapeOutput[0]) +
@@ -325,7 +303,7 @@ bool meetPoolParamRestrictions(Operation *op, int64_t inputShape,
       return onnxToZHighUnsupportedReport(op, message);
     }
     // padding_type must be VALID_PADDING.
-    if (!paddingType.equals("VALID_PADDING")) {
+    if (!(paddingType == "VALID_PADDING")) {
       std::string message = "When the strides is zero, padding type (" +
                             paddingType.str() + ") must be VALID_PADDING.";
       return onnxToZHighUnsupportedReport(op, message);
@@ -341,8 +319,8 @@ bool meetPoolParamRestrictions(Operation *op, int64_t inputShape,
                             ") must be less than or equal to 64.";
       return onnxToZHighUnsupportedReport(op, message);
     }
-    if (paddingType.equals("SAME_PADDING")) {
-      int64_t reqOutputShape = ceil((float)inputShape / strides);
+    if (paddingType == "SAME_PADDING") {
+      int64_t reqOutputShape = ceil(static_cast<float>(inputShape) / strides);
       if (outputShape != reqOutputShape) {
         std::string message =
             "When the strides (" + std::to_string(strides) +
@@ -356,7 +334,7 @@ bool meetPoolParamRestrictions(Operation *op, int64_t inputShape,
       }
     } else { // VALID_PADDING
       int64_t reqOutputShape =
-          ceil((float)(inputShape - kernelShape + 1) / strides);
+          ceil(static_cast<float>(inputShape - kernelShape + 1) / strides);
       if (outputShape != reqOutputShape) {
         std::string message = "When the strides (" + std::to_string(strides) +
                               ") and the padding type is VALID_PADDING, output "
@@ -384,13 +362,14 @@ template <>
 bool isSuitableForZDNN<ONNXAddOp>(
     ONNXAddOp op, const DimAnalysis *dimAnalysis) {
   // Check NNPA level.
-  if (!isCompatibleWithNNPALevel(NNPA_Z16)) {
-    return onnxToZHighInCompatibilityReport(op.getOperation());
+  if (!isCompatibleWithNNPALevel(NNPALevel::M14)) {
+    return onnxToZHighInCompatibilityReport(op.getOperation(), NNPALevel::M14);
   }
   if (!isValidElementTypeAndRank(op.getOperation(), op.getA()))
     return false;
   if (!isValidElementTypeAndRank(op.getOperation(), op.getB()))
     return false;
+  // Rule below is true for adds that are not fused into matmul.
   if (!dimAnalysis->sameShape(op.getA(), op.getB()))
     return onnxToZHighUnsupportedReport(op.getOperation(),
         "The dynamic dimension analysis couldn't identify "
@@ -403,8 +382,8 @@ template <>
 bool isSuitableForZDNN<ONNXSubOp>(
     ONNXSubOp op, const DimAnalysis *dimAnalysis) {
   // Check NNPA level.
-  if (!isCompatibleWithNNPALevel(NNPA_Z16))
-    return onnxToZHighInCompatibilityReport(op.getOperation());
+  if (!isCompatibleWithNNPALevel(NNPALevel::M14))
+    return onnxToZHighInCompatibilityReport(op.getOperation(), NNPALevel::M14);
   if (!isValidElementTypeAndRank(op.getOperation(), op.getA()))
     return false;
   if (!isValidElementTypeAndRank(op.getOperation(), op.getB()))
@@ -421,8 +400,8 @@ template <>
 bool isSuitableForZDNN<ONNXMulOp>(
     ONNXMulOp op, const DimAnalysis *dimAnalysis) {
   // Check NNPA level.
-  if (!isCompatibleWithNNPALevel(NNPA_Z16))
-    return onnxToZHighInCompatibilityReport(op.getOperation());
+  if (!isCompatibleWithNNPALevel(NNPALevel::M14))
+    return onnxToZHighInCompatibilityReport(op.getOperation(), NNPALevel::M14);
   if (!isValidElementTypeAndRank(op.getOperation(), op.getA()))
     return false;
   if (!isValidElementTypeAndRank(op.getOperation(), op.getB()))
@@ -441,8 +420,8 @@ bool isSuitableForZDNN<ONNXDivOp>(
   Value A = op.getA();
   Value B = op.getB();
   // Check NNPA level.
-  if (!isCompatibleWithNNPALevel(NNPA_Z16))
-    return onnxToZHighInCompatibilityReport(op.getOperation());
+  if (!isCompatibleWithNNPALevel(NNPALevel::M14))
+    return onnxToZHighInCompatibilityReport(op.getOperation(), NNPALevel::M14);
   // Broadcast with a scalar operand.
   if (isEnableScalarBcastBinary()) {
     if (isF32ScalarConstantTensor(A) &&
@@ -469,8 +448,8 @@ template <>
 bool isSuitableForZDNN<ONNXSumOp>(
     ONNXSumOp op, const DimAnalysis *dimAnalysis) {
   // Check NNPA level.
-  if (!isCompatibleWithNNPALevel(NNPA_Z16))
-    return onnxToZHighInCompatibilityReport(op.getOperation());
+  if (!isCompatibleWithNNPALevel(NNPALevel::M14))
+    return onnxToZHighInCompatibilityReport(op.getOperation(), NNPALevel::M14);
   // Do not support a single input.
   if (op.getData_0().size() < 2)
     return onnxToZHighUnsupportedReport(op.getOperation(),
@@ -500,8 +479,8 @@ template <>
 bool isSuitableForZDNN<ONNXMinOp>(
     ONNXMinOp op, const DimAnalysis *dimAnalysis) {
   // Check NNPA level.
-  if (!isCompatibleWithNNPALevel(NNPA_Z16))
-    return onnxToZHighInCompatibilityReport(op.getOperation());
+  if (!isCompatibleWithNNPALevel(NNPALevel::M14))
+    return onnxToZHighInCompatibilityReport(op.getOperation(), NNPALevel::M14);
   int64_t opnum = op.getNumOperands();
   if (opnum != 2)
     return onnxToZHighUnsupportedReport(op.getOperation(),
@@ -518,13 +497,13 @@ bool isSuitableForZDNN<ONNXMinOp>(
 }
 
 /// Check legality for ONNXMax.
-/// zDNN Min/Max do not support boradcasting, and getNumOperands != 2.
+/// zDNN Min/Max do not support broadcasting, and getNumOperands != 2.
 template <>
 bool isSuitableForZDNN<ONNXMaxOp>(
     ONNXMaxOp op, const DimAnalysis *dimAnalysis) {
   // Check NNPA level.
-  if (!isCompatibleWithNNPALevel(NNPA_Z16))
-    return onnxToZHighInCompatibilityReport(op.getOperation());
+  if (!isCompatibleWithNNPALevel(NNPALevel::M14))
+    return onnxToZHighInCompatibilityReport(op.getOperation(), NNPALevel::M14);
   int64_t opnum = op.getNumOperands();
   if (opnum != 2)
     return onnxToZHighUnsupportedReport(op.getOperation(),
@@ -547,11 +526,11 @@ template <>
 bool isSuitableForZDNN<ONNXSoftmaxOp>(
     ONNXSoftmaxOp op, const DimAnalysis *dimAnalysis) {
   // Check NNPA level.
-  if (!isCompatibleWithNNPALevel(NNPA_Z16))
-    return onnxToZHighInCompatibilityReport(op.getOperation());
+  if (!isCompatibleWithNNPALevel(NNPALevel::M14))
+    return onnxToZHighInCompatibilityReport(op.getOperation(), NNPALevel::M14);
   if (!isValidElementTypeAndRank(op.getOperation(), op.getInput()))
     return false;
-  ShapedType inputType = op.getType().cast<ShapedType>();
+  ShapedType inputType = mlir::cast<ShapedType>(op.getType());
   if (!inputType.hasRank())
     return onnxToZHighUnsupportedReport(
         op.getOperation(), "The `input` tensor doesn't have the rank.");
@@ -568,24 +547,40 @@ bool isSuitableForZDNN<ONNXSoftmaxOp>(
   return true;
 }
 
+/// Check legality for ONNXLeakyRelu.
+template <>
+bool isSuitableForZDNN<ONNXLeakyReluOp>(
+    ONNXLeakyReluOp op, const DimAnalysis *dimAnalysis) {
+  // Check NNPA level.
+  if (!isCompatibleWithNNPALevel(NNPALevel::M15))
+    return onnxToZHighInCompatibilityReport(op.getOperation(), NNPALevel::M15);
+  if (!isValidElementTypeAndRank(op.getOperation(), op.getX()))
+    return false;
+  return true;
+}
+
 /// Check legality for ONNXRelu.
 template <>
 bool isSuitableForZDNN<ONNXReluOp>(
     ONNXReluOp op, const DimAnalysis *dimAnalysis) {
   // Check NNPA level.
-  if (!isCompatibleWithNNPALevel(NNPA_Z16))
-    return onnxToZHighInCompatibilityReport(op.getOperation());
+  if (!isCompatibleWithNNPALevel(NNPALevel::M14))
+    return onnxToZHighInCompatibilityReport(op.getOperation(), NNPALevel::M14);
   if (!isValidElementTypeAndRank(op.getOperation(), op.getX()))
     return false;
-  ShapedType xType = op.getX().getType().cast<ShapedType>();
-  if (xType.hasRank() && (xType.getRank() <= 4))
-    return true;
+  return true;
+}
 
-  std::string message = xType.hasRank() ? ("The rank of input tensor (" +
-                                              std::to_string(xType.getRank()) +
-                                              ") needs to be 4 or less.")
-                                        : "The input tensor doesn't have rank.";
-  return onnxToZHighUnsupportedReport(op.getOperation(), message);
+/// Check legality for ONNXGelu.
+template <>
+bool isSuitableForZDNN<ONNXGeluOp>(
+    ONNXGeluOp op, const DimAnalysis *dimAnalysis) {
+  // Check NNPA level.
+  if (!isCompatibleWithNNPALevel(NNPALevel::M15))
+    return onnxToZHighInCompatibilityReport(op.getOperation(), NNPALevel::M15);
+  if (!isValidElementTypeAndRank(op.getOperation(), op.getX()))
+    return false;
+  return true;
 }
 
 /// Check legality for ONNXTanh.
@@ -593,20 +588,11 @@ template <>
 bool isSuitableForZDNN<ONNXTanhOp>(
     ONNXTanhOp op, const DimAnalysis *dimAnalysis) {
   // Check NNPA level.
-  if (!isCompatibleWithNNPALevel(NNPA_Z16))
-    return onnxToZHighInCompatibilityReport(op.getOperation());
+  if (!isCompatibleWithNNPALevel(NNPALevel::M14))
+    return onnxToZHighInCompatibilityReport(op.getOperation(), NNPALevel::M14);
   if (!isValidElementTypeAndRank(op.getOperation(), op.getInput()))
     return false;
-  ShapedType inputType = op.getType().cast<ShapedType>();
-  if (inputType.hasRank() && (inputType.getRank() <= 4))
-    return true;
-
-  std::string message = inputType.hasRank()
-                            ? ("The rank of input tensor (" +
-                                  std::to_string(inputType.getRank()) +
-                                  ") needs to be 4 or less.")
-                            : "The input tensor doesn't have rank.";
-  return onnxToZHighUnsupportedReport(op.getOperation(), message);
+  return true;
 }
 
 /// Check legality for ONNXSigmoid.
@@ -614,19 +600,23 @@ template <>
 bool isSuitableForZDNN<ONNXSigmoidOp>(
     ONNXSigmoidOp op, const DimAnalysis *dimAnalysis) {
   // Check NNPA level.
-  if (!isCompatibleWithNNPALevel(NNPA_Z16))
-    return onnxToZHighInCompatibilityReport(op.getOperation());
+  if (!isCompatibleWithNNPALevel(NNPALevel::M14))
+    return onnxToZHighInCompatibilityReport(op.getOperation(), NNPALevel::M14);
   if (!isValidElementTypeAndRank(op.getOperation(), op.getX()))
     return false;
-  ShapedType xType = op.getX().getType().cast<ShapedType>();
-  if (xType.hasRank() && (xType.getRank() <= 4))
-    return true;
+  return true;
+}
 
-  std::string message = xType.hasRank() ? ("The rank of input tensor (" +
-                                              std::to_string(xType.getRank()) +
-                                              ") needs to be 4 or less.")
-                                        : "The input tensor doesn't have rank.";
-  return onnxToZHighUnsupportedReport(op.getOperation(), message);
+/// Check legality for ONNXSqrt.
+template <>
+bool isSuitableForZDNN<ONNXSqrtOp>(
+    ONNXSqrtOp op, const DimAnalysis *dimAnalysis) {
+  // Check NNPA level.
+  if (!isCompatibleWithNNPALevel(NNPALevel::M15))
+    return onnxToZHighInCompatibilityReport(op.getOperation(), NNPALevel::M15);
+  if (!isValidElementTypeAndRank(op.getOperation(), op.getX()))
+    return false;
+  return true;
 }
 
 /// Check legality for ONNXLog.
@@ -634,20 +624,11 @@ template <>
 bool isSuitableForZDNN<ONNXLogOp>(
     ONNXLogOp op, const DimAnalysis *dimAnalysis) {
   // Check NNPA level.
-  if (!isCompatibleWithNNPALevel(NNPA_Z16))
-    return onnxToZHighInCompatibilityReport(op.getOperation());
+  if (!isCompatibleWithNNPALevel(NNPALevel::M14))
+    return onnxToZHighInCompatibilityReport(op.getOperation(), NNPALevel::M14);
   if (!isValidElementTypeAndRank(op.getOperation(), op.getInput()))
     return false;
-  ShapedType inputType = op.getInput().getType().cast<ShapedType>();
-  if (inputType.hasRank() && (inputType.getRank() <= 4))
-    return true;
-
-  std::string message = inputType.hasRank()
-                            ? ("The rank of input tensor (" +
-                                  std::to_string(inputType.getRank()) +
-                                  ") needs to be 4 or less.")
-                            : "The input tensor doesn't have rank.";
-  return onnxToZHighUnsupportedReport(op.getOperation(), message);
+  return true;
 }
 
 /// Check legality for ONNXExp.
@@ -655,20 +636,11 @@ template <>
 bool isSuitableForZDNN<ONNXExpOp>(
     ONNXExpOp op, const DimAnalysis *dimAnalysis) {
   // Check NNPA level.
-  if (!isCompatibleWithNNPALevel(NNPA_Z16))
-    return onnxToZHighInCompatibilityReport(op.getOperation());
+  if (!isCompatibleWithNNPALevel(NNPALevel::M14))
+    return onnxToZHighInCompatibilityReport(op.getOperation(), NNPALevel::M14);
   if (!isValidElementTypeAndRank(op.getOperation(), op.getInput()))
     return false;
-  ShapedType inputType = op.getInput().getType().cast<ShapedType>();
-  if (inputType.hasRank() && (inputType.getRank() <= 4))
-    return true;
-
-  std::string message = inputType.hasRank()
-                            ? ("The rank of input tensor (" +
-                                  std::to_string(inputType.getRank()) +
-                                  ") needs to be 4 or less.")
-                            : "The input tensor doesn't have rank.";
-  return onnxToZHighUnsupportedReport(op.getOperation(), message);
+  return true;
 }
 
 /// Check legality for ONNXMatMul.
@@ -676,8 +648,8 @@ template <>
 bool isSuitableForZDNN<ONNXMatMulOp>(
     ONNXMatMulOp op, const DimAnalysis *dimAnalysis) {
   // Check NNPA level.
-  if (!isCompatibleWithNNPALevel(NNPA_Z16))
-    return onnxToZHighInCompatibilityReport(op.getOperation());
+  if (!isCompatibleWithNNPALevel(NNPALevel::M14))
+    return onnxToZHighInCompatibilityReport(op.getOperation(), NNPALevel::M14);
   int64_t opnum = op.getNumOperands();
   if (opnum != 2)
     return onnxToZHighUnsupportedReport(op.getOperation(),
@@ -688,8 +660,8 @@ bool isSuitableForZDNN<ONNXMatMulOp>(
   if (!isValidElementTypeAndRank(op.getOperation(), op.getOperand(1))) {
     return false;
   }
-  ShapedType aType = op.getOperand(0).getType().cast<ShapedType>();
-  ShapedType bType = op.getOperand(1).getType().cast<ShapedType>();
+  ShapedType aType = mlir::cast<ShapedType>(op.getOperand(0).getType());
+  ShapedType bType = mlir::cast<ShapedType>(op.getOperand(1).getType());
 
   // Illegal if A or B is unranked.
   if (!aType.hasRank() || !bType.hasRank())
@@ -706,7 +678,7 @@ bool isSuitableForZDNN<ONNXMatMulOp>(
   // (https://github.com/onnx/onnx/blob/main/docs/Operators.md#MatMul) on zDNN
   // by using broadcasting etc.
   if ((shapeA.size() == 2) && (shapeB.size() == 2)) {
-    // unstacked case
+    // Unstacked case.
     if (aType.hasStaticShape() && bType.hasStaticShape()) {
       if (shapeA[1] != shapeB[0]) {
         std::string message = "Unstacked case: the 2nd dim of A (" +
@@ -718,7 +690,7 @@ bool isSuitableForZDNN<ONNXMatMulOp>(
     }
     return true;
   } else if ((shapeA.size() == 3) && (shapeB.size() == 3)) {
-    // stacked w/o bcast case
+    // Stacked w/o bcast case.
     if (aType.hasStaticShape() && bType.hasStaticShape()) {
       if ((shapeA[0] != shapeB[0]) || (shapeA[2] != shapeB[1])) {
         std::string message =
@@ -733,10 +705,10 @@ bool isSuitableForZDNN<ONNXMatMulOp>(
     }
     return true;
   } else if ((shapeA.size() == 3) && (shapeB.size() == 2)) {
-    // stacked w/ bcast
+    // Bcast23 case.
     if (aType.hasStaticShape() && bType.hasStaticShape()) {
       if (shapeA[2] != shapeB[0]) {
-        std::string message = "Stacked w/ bcast case: the 3rd dim of A (" +
+        std::string message = "Stacked w/ bcast23 case: the 3rd dim of A (" +
                               std::to_string(shapeA[2]) +
                               ") and the 1st dim of B (" +
                               std::to_string(shapeB[0]) + ") are not the same.";
@@ -744,7 +716,160 @@ bool isSuitableForZDNN<ONNXMatMulOp>(
       }
     }
     return true;
+  } else if ((shapeA.size() == 2) && (shapeB.size() == 3)) {
+    // Bcast1 case.
+    if (!isCompatibleWithNNPALevel(NNPALevel::M15))
+      return onnxToZHighInCompatibilityReport(
+          op.getOperation(), NNPALevel::M15);
+    if (aType.hasStaticShape() && bType.hasStaticShape()) {
+      if (shapeA[1] != shapeB[1]) {
+        std::string message = "Stacked w/ bcast1 case: the 2nd dim of A (" +
+                              std::to_string(shapeA[1]) +
+                              ") and the 2nd dim of B (" +
+                              std::to_string(shapeB[1]) + ") are not the same.";
+        return onnxToZHighUnsupportedReport(op.getOperation(), message);
+      }
+    }
+    return true;
   }
+  std::string message = "Dim size of A(" + std::to_string(shapeA.size()) +
+                        ") and B(" + std::to_string(shapeB.size()) +
+                        ") is not supported.";
+  return onnxToZHighUnsupportedReport(op.getOperation(), message);
+}
+
+/// Check legality for ONNXMatMulInteger.
+template <>
+bool isSuitableForZDNN<ONNXMatMulIntegerOp>(
+    ONNXMatMulIntegerOp op, const DimAnalysis *dimAnalysis) {
+  // Check NNPA level.
+  if (!isCompatibleWithNNPALevel(NNPALevel::M15))
+    return onnxToZHighInCompatibilityReport(op.getOperation(), NNPALevel::M15);
+
+  // Only support per-tensor quantization.
+  Value AZeroPoint = op.getAZeroPoint();
+  Value BZeroPoint = op.getBZeroPoint();
+  if (!isScalarTensor(AZeroPoint))
+    return onnxToZHighInCompatibilityReport(
+        op.getOperation(), "A's zeropoint is not scalar");
+  if (!isScalarTensor(BZeroPoint))
+    return onnxToZHighInCompatibilityReport(
+        op.getOperation(), "B's zeropoint is not scalar");
+
+  ShapedType aType = mlir::cast<ShapedType>(op.getA().getType());
+  ShapedType bType = mlir::cast<ShapedType>(op.getB().getType());
+
+  // Illegal if A or B is unranked.
+  if (!aType.hasRank() || !bType.hasRank())
+    return false;
+
+  auto shapeA = aType.getShape();
+  auto shapeB = bType.getShape();
+
+  // In case of Tensors with unknown dimension, check only size of matrices.
+  // Actual shape is not checked. If actual shape does not meet, get error at
+  // runtime.
+  // TODO: Support other cases
+  // (https://github.com/onnx/onnx/blob/main/docs/Operators.md#MatMul) on zDNN
+  // by using broadcasting etc.
+  if ((shapeA.size() == 2) && (shapeB.size() == 2)) {
+    // unstacked case
+    if (aType.hasStaticShape() && bType.hasStaticShape())
+      return (shapeA[1] == shapeB[0]);
+    else
+      return true;
+  } else if ((shapeA.size() == 3) && (shapeB.size() == 3)) {
+    // stacked w/o bcast case
+    if (aType.hasStaticShape() && bType.hasStaticShape())
+      return ((shapeA[0] == shapeB[0]) && (shapeA[2] == shapeB[1]));
+    else
+      return true;
+  } else if ((shapeA.size() == 3) && (shapeB.size() == 2)) {
+    // stacked w/ bcast
+    if (aType.hasStaticShape() && bType.hasStaticShape())
+      return (shapeA[2] == shapeB[0]);
+    else
+      return true;
+  }
+
+  return false; // unsupported case
+}
+
+/// Check legality for ONNXQLinearMatMul.
+template <>
+bool isSuitableForZDNN<ONNXQLinearMatMulOp>(
+    ONNXQLinearMatMulOp op, const DimAnalysis *dimAnalysis) {
+  Value A = op.getA();
+  Value AScale = op.getAScale();
+  Value AZeroPoint = op.getAZeroPoint();
+  Value B = op.getB();
+  Value BScale = op.getBScale();
+  Value BZeroPoint = op.getBZeroPoint();
+  Value Y = op.getY();
+  Value YScale = op.getYScale();
+
+  // Check NNPA level.
+  if (!isCompatibleWithNNPALevel(NNPALevel::M15))
+    return onnxToZHighInCompatibilityReport(op.getOperation(), NNPALevel::M15);
+
+  // Only support float32 <-> int8/uint8.
+  Type elemTyA = getElementType(A.getType());
+  Type elemTyAScale = getElementType(AScale.getType());
+  Type elemTyB = getElementType(B.getType());
+  Type elemTyBScale = getElementType(BScale.getType());
+  Type elemTyY = getElementType(Y.getType());
+  Type elemTyYScale = getElementType(YScale.getType());
+
+  if (!elemTyAScale.isF32() || !elemTyBScale.isF32() || !elemTyYScale.isF32())
+    return false;
+  if (!(elemTyA.isInteger(8) || elemTyA.isUnsignedInteger(8)))
+    return false;
+  if (!(elemTyB.isInteger(8) || elemTyB.isUnsignedInteger(8)))
+    return false;
+  if (!(elemTyY.isInteger(8) || elemTyY.isUnsignedInteger(8)))
+    return false;
+
+  // Only support per-tensor quantization.
+  if (!isScalarTensor(AScale) || !isScalarTensor(BScale) ||
+      !isScalarTensor(AZeroPoint) || !isScalarTensor(BZeroPoint))
+    return false;
+
+  ShapedType aType = mlir::cast<ShapedType>(A.getType());
+  ShapedType bType = mlir::cast<ShapedType>(B.getType());
+
+  // Illegal if A or B is unranked.
+  if (!aType.hasRank() || !bType.hasRank())
+    return false;
+
+  auto shapeA = aType.getShape();
+  auto shapeB = bType.getShape();
+
+  // In case of Tensors with unknown dimension, check only size of matrices.
+  // Actual shape is not checked. If actual shape does not meet, get error at
+  // runtime.
+  // TODO: Support other cases
+  // (https://github.com/onnx/onnx/blob/main/docs/Operators.md#MatMul) on zDNN
+  // by using broadcasting etc.
+  if ((shapeA.size() == 2) && (shapeB.size() == 2)) {
+    // unstacked case
+    if (aType.hasStaticShape() && bType.hasStaticShape())
+      return (shapeA[1] == shapeB[0]);
+    else
+      return true;
+  } else if ((shapeA.size() == 3) && (shapeB.size() == 3)) {
+    // stacked w/o bcast case
+    if (aType.hasStaticShape() && bType.hasStaticShape())
+      return ((shapeA[0] == shapeB[0]) && (shapeA[2] == shapeB[1]));
+    else
+      return true;
+  } else if ((shapeA.size() == 3) && (shapeB.size() == 2)) {
+    // stacked w/ bcast
+    if (aType.hasStaticShape() && bType.hasStaticShape())
+      return (shapeA[2] == shapeB[0]);
+    else
+      return true;
+  }
+
   return false; // unsupported case
 }
 
@@ -757,8 +882,8 @@ bool isSuitableForZDNN<ONNXGemmOp>(
   Value C = op.getC();
 
   // Check NNPA level.
-  if (!isCompatibleWithNNPALevel(NNPA_Z16))
-    return onnxToZHighInCompatibilityReport(op.getOperation());
+  if (!isCompatibleWithNNPALevel(NNPALevel::M14))
+    return onnxToZHighInCompatibilityReport(op.getOperation(), NNPALevel::M14);
 
   // Check data type.
   if (!isValidElementTypeAndRank(op.getOperation(), A))
@@ -768,8 +893,8 @@ bool isSuitableForZDNN<ONNXGemmOp>(
   if (!isValidElementTypeAndRank(op.getOperation(), C))
     return false;
 
-  ShapedType aType = A.getType().cast<ShapedType>();
-  ShapedType bType = B.getType().cast<ShapedType>();
+  ShapedType aType = mlir::cast<ShapedType>(A.getType());
+  ShapedType bType = mlir::cast<ShapedType>(B.getType());
   ShapedType cType;
   ArrayRef<int64_t> aShape = aType.getShape();
   ArrayRef<int64_t> bShape = bType.getShape();
@@ -777,7 +902,7 @@ bool isSuitableForZDNN<ONNXGemmOp>(
 
   bool hasC = !isNoneValue(C);
   if (hasC) {
-    cType = C.getType().cast<ShapedType>();
+    cType = mlir::cast<ShapedType>(C.getType());
     cShape = cType.getShape();
   }
 
@@ -826,13 +951,91 @@ bool isSuitableForZDNN<ONNXGemmOp>(
   return true;
 }
 
+// Common function for ReduceMax and ReduceMin
+template <typename OP_TYPE>
+static bool checkReduceParam(OP_TYPE op) {
+  OpBuilder b(op);
+  Location loc = op.getLoc();
+  IndexExprBuilderForAnalysis createIE(loc);
+  IndexExprScope ieScope(&b, loc);
+
+  Value data = op.getData();
+  Value axesVal = op.getAxes();
+  int64_t keepdims = op.getKeepdims();
+  int64_t noop_with_empty_axes = op.getNoopWithEmptyAxes();
+
+  // Check NNPA level.
+  if (!isCompatibleWithNNPALevel(NNPALevel::M15))
+    return onnxToZHighInCompatibilityReport(op.getOperation(), NNPALevel::M15);
+
+  // Check data type.
+  int64_t rank = getRank(data.getType());
+  if (!isValidElementTypeAndRank(op.getOperation(), data))
+    return false;
+
+  // NNPA does not support reduction over all axes.
+  if (isNoneValue(axesVal))
+    return onnxToZHighUnsupportedReport(
+        op.getOperation(), "Does not support reduction over all axes.");
+
+  // Check keepdims and noop_with_empty_axes, we only support the default
+  // value. Attributes: keepdims (default is 1) and noop_with_empty_axes
+  // (default is 0)
+  if ((noop_with_empty_axes == 1) || (keepdims == 0)) {
+    std::string message = "`noop_with_empty_axes` (" +
+                          std::to_string(noop_with_empty_axes) +
+                          ") must be 0 and `keepdims` (" +
+                          std::to_string(keepdims) + ") must be 1.";
+    return onnxToZHighUnsupportedReport(op, message);
+  }
+
+  // Check axes value
+  DimsExpr axesIE;
+  createIE.getIntFromArrayAsDims(axesVal, axesIE);
+  if (axesIE.size() != 1)
+    return onnxToZHighUnsupportedReport(
+        op.getOperation(), "Does not support multiple reduction axes.");
+  if (!axesIE[0].isLiteral())
+    return onnxToZHighUnsupportedReport(
+        op.getOperation(), "Reduction axis is unknown at compile time.");
+  int64_t axis = axesIE[0].getLiteral();
+  // Accepted range is [-r, r-1] where r = rank(data)
+  if (axis < -rank || axis > rank - 1) {
+    std::string message =
+        "Reduction axis is out of the accepted range which is [-r, r-1]";
+    return onnxToZHighUnsupportedReport(op, message);
+  }
+  if ((axis != -1) && (axis != rank - 1)) {
+    std::string message = "Reduction axis must be the innermost dimension. ";
+    return onnxToZHighUnsupportedReport(op, message);
+  }
+
+  return true;
+}
+
+/// Check legality for ONNXReduceMax.
+template <>
+bool isSuitableForZDNN<ONNXReduceMaxOp>(
+    ONNXReduceMaxOp op, const DimAnalysis *dimAnalysis) {
+  // Check parameter restrictions for ReduceMax
+  return checkReduceParam<ONNXReduceMaxOp>(op);
+}
+
+/// Check legality for ONNXReduceMin.
+template <>
+bool isSuitableForZDNN<ONNXReduceMinOp>(
+    ONNXReduceMinOp op, const DimAnalysis *dimAnalysis) {
+  // Check parameter restrictions for ReduceMin
+  return checkReduceParam<ONNXReduceMinOp>(op);
+}
+
 /// Check legality for ONNXReduceMeanV13.
 template <>
 bool isSuitableForZDNN<ONNXReduceMeanV13Op>(
     ONNXReduceMeanV13Op op, const DimAnalysis *dimAnalysis) {
   // Check NNPA level.
-  if (!isCompatibleWithNNPALevel(NNPA_Z16))
-    return onnxToZHighInCompatibilityReport(op.getOperation());
+  if (!isCompatibleWithNNPALevel(NNPALevel::M14))
+    return onnxToZHighInCompatibilityReport(op.getOperation(), NNPALevel::M14);
 
   // Check data type.
   if (!isValidElementTypeAndRank(op.getOperation(), op.getData()))
@@ -840,7 +1043,7 @@ bool isSuitableForZDNN<ONNXReduceMeanV13Op>(
 
   std::optional<mlir::ArrayAttr> axes = op.getAxes();
   int64_t keepdims = op.getKeepdims();
-  ShapedType dataType = op.getData().getType().cast<ShapedType>();
+  ShapedType dataType = mlir::cast<ShapedType>(op.getData().getType());
   auto shapeData = dataType.getShape();
 
   // Check keepdims.
@@ -856,18 +1059,18 @@ bool isSuitableForZDNN<ONNXReduceMeanV13Op>(
   mlir::ArrayAttr axesVal = axes.value();
   SmallVector<Attribute> axesAttrs(axesVal.begin(), axesVal.end());
   if ((axesAttrs.size() != 2) ||
-      (axesAttrs[0].dyn_cast<IntegerAttr>().getInt() != 2) ||
-      (axesAttrs[1].dyn_cast<IntegerAttr>().getInt() != 3)) {
+      (mlir::dyn_cast<IntegerAttr>(axesAttrs[0]).getInt() != 2) ||
+      (mlir::dyn_cast<IntegerAttr>(axesAttrs[1]).getInt() != 3)) {
     std::string message =
         axesAttrs.size() != 2
             ? ("The size of `axes`(" + std::to_string(axesAttrs.size()) +
                   ") must be 2.")
             : "The `axes`[0] (" +
                   std::to_string(
-                      axesAttrs[0].dyn_cast<IntegerAttr>().getInt()) +
+                      mlir::dyn_cast<IntegerAttr>(axesAttrs[0]).getInt()) +
                   ") must be 2, and `axes`[1] (" +
                   std::to_string(
-                      axesAttrs[1].dyn_cast<IntegerAttr>().getInt()) +
+                      mlir::dyn_cast<IntegerAttr>(axesAttrs[1]).getInt()) +
                   ") must be 3.";
     return onnxToZHighUnsupportedReport(op.getOperation(), message);
   }
@@ -893,7 +1096,7 @@ template <>
 bool isSuitableForZDNN<ONNXSoftplusOp>(
     ONNXSoftplusOp op, const DimAnalysis *dimAnalysis) {
   // Check NNPA level.
-  if (!isCompatibleWithNNPALevel(NNPA_Z16))
+  if (!isCompatibleWithNNPALevel(NNPALevel::M14))
     return false;
   if (!isValidElementTypeAndRank(op.getOperation(), op.getX()))
     return false;
@@ -911,8 +1114,8 @@ bool isSuitableForZDNN<ONNXLSTMOp>(
   Value B = op.getB();
 
   // Check NNPA level.
-  if (!isCompatibleWithNNPALevel(NNPA_Z16))
-    return onnxToZHighInCompatibilityReport(op.getOperation());
+  if (!isCompatibleWithNNPALevel(NNPALevel::M14))
+    return onnxToZHighInCompatibilityReport(op.getOperation(), NNPALevel::M14);
 
   // Check direction.
   if ((direction != FORWARD) && (direction != REVERSE) &&
@@ -928,25 +1131,26 @@ bool isSuitableForZDNN<ONNXLSTMOp>(
   if (!isValidElementTypeAndRank(op.getOperation(), B))
     return false;
 
-  int64_t hidden_size = R.getType().cast<ShapedType>().getShape()[2];
+  int64_t hidden_size = mlir::cast<ShapedType>(R.getType()).getShape()[2];
   std::optional<ArrayAttr> activations = op.getActivations();
   // Check if direction and hidden_size in W have static dimensions.
-  ArrayRef<int64_t> wShape = W.getType().cast<ShapedType>().getShape();
+  ArrayRef<int64_t> wShape = mlir::cast<ShapedType>(W.getType()).getShape();
   if ((wShape[0] != 1 && wShape[0] != 2) || wShape[1] == ShapedType::kDynamic) {
     std::string message =
         "The first dimension of weight tensor `W` for `num_directions` (" +
         std::to_string(wShape[0]) +
-        ") must be 1 or 2, and the second dimension of it for `hidden_size` (" +
+        ") must be 1 or 2, and the second dimension of it for `hidden_size` "
+        "(" +
         std::to_string(wShape[1]) + ") must be static.";
     return onnxToZHighUnsupportedReport(op.getOperation(), message);
   }
   // Check if R has static dimensions, and the direction dim is 1 or 2.
-  ArrayRef<int64_t> rShape = R.getType().cast<ShapedType>().getShape();
-  if (!R.getType().cast<ShapedType>().hasStaticShape() ||
+  ArrayRef<int64_t> rShape = mlir::cast<ShapedType>(R.getType()).getShape();
+  if (!mlir::cast<ShapedType>(R.getType()).hasStaticShape() ||
       (rShape[0] != 1 && rShape[0] != 2)) {
-    std::string message =
-        "The recurrence weight tensor `R` must have static dimension, and the "
-        "first dimension of it must be 1 or 2.";
+    std::string message = "The recurrence weight tensor `R` must have static "
+                          "dimension, and the "
+                          "first dimension of it must be 1 or 2.";
     return onnxToZHighUnsupportedReport(op.getOperation(), message);
   }
   // Check hidden_size.
@@ -960,12 +1164,12 @@ bool isSuitableForZDNN<ONNXLSTMOp>(
   if (!isNoneValue(op.getSequenceLens()))
     return false;
   // check if B, initial_h and initial_c have static dimensions if given.
-  if (!isNoneValue(B) && !B.getType().cast<ShapedType>().hasStaticShape())
+  if (!isNoneValue(B) && !mlir::cast<ShapedType>(B.getType()).hasStaticShape())
     return onnxToZHighUnsupportedReport(
         op.getOperation(), "The bias tensor `B` must be static.");
   // check if B's direction dim is 1 or 2.
   if (!isNoneValue(B)) {
-    ArrayRef<int64_t> bShape = B.getType().cast<ShapedType>().getShape();
+    ArrayRef<int64_t> bShape = mlir::cast<ShapedType>(B.getType()).getShape();
     if (bShape[0] != 1 && bShape[0] != 2) {
       std::string message = "The first dimension of the bias tensor `B` (" +
                             std::to_string(bShape[0]) + ") must be 1 or 2.";
@@ -980,12 +1184,14 @@ bool isSuitableForZDNN<ONNXLSTMOp>(
         "weight tensor for peepoles are not supported.");
   // zDNN support the default activations (["Sigmoid", "Tanh", "Tanh"]) only.
   if ((activations && (activations.value().size() > 0) &&
-          (activations.value()[0].cast<StringAttr>().getValue() !=
+          (mlir::cast<StringAttr>(activations.value()[0]).getValue() !=
               "Sigmoid")) ||
       (activations && (activations.value().size() > 1) &&
-          (activations.value()[1].cast<StringAttr>().getValue() != "Tanh")) ||
+          (mlir::cast<StringAttr>(activations.value()[1]).getValue() !=
+              "Tanh")) ||
       (activations && (activations.value().size() > 2) &&
-          (activations.value()[2].cast<StringAttr>().getValue() != "Tanh")))
+          (mlir::cast<StringAttr>(activations.value()[2]).getValue() !=
+              "Tanh")))
     return onnxToZHighUnsupportedReport(op.getOperation(),
         "The `activations` must be the default activations "
         "([Sigmoid, Tanh, Tanh]).");
@@ -1022,8 +1228,8 @@ bool isSuitableForZDNN<ONNXGRUOp>(
   Value B = op.getB();
 
   // Check NNPA level.
-  if (!isCompatibleWithNNPALevel(NNPA_Z16))
-    return onnxToZHighInCompatibilityReport(op.getOperation());
+  if (!isCompatibleWithNNPALevel(NNPALevel::M14))
+    return onnxToZHighInCompatibilityReport(op.getOperation(), NNPALevel::M14);
 
   // Check direction.
   if ((direction != FORWARD) && (direction != REVERSE) &&
@@ -1039,20 +1245,21 @@ bool isSuitableForZDNN<ONNXGRUOp>(
   if (!isValidElementTypeAndRank(op.getOperation(), B))
     return false;
 
-  int64_t hidden_size = R.getType().cast<ShapedType>().getShape()[2];
+  int64_t hidden_size = mlir::cast<ShapedType>(R.getType()).getShape()[2];
   std::optional<ArrayAttr> activations = op.getActivations();
   // Check if direction and hidden_size in W have static dimensions.
-  ArrayRef<int64_t> wShape = W.getType().cast<ShapedType>().getShape();
+  ArrayRef<int64_t> wShape = mlir::cast<ShapedType>(W.getType()).getShape();
   if ((wShape[0] != 1 && wShape[0] != 2) || wShape[1] == ShapedType::kDynamic) {
     std::string message =
         "The first dimension of weight tensor `W` for `num_directions` (" +
         std::to_string(wShape[0]) +
-        ") must be 1 or 2, and the second dimension of it for `hidden_size` (" +
+        ") must be 1 or 2, and the second dimension of it for `hidden_size` "
+        "(" +
         std::to_string(wShape[1]) + ") must be static.";
     return onnxToZHighUnsupportedReport(op.getOperation(), message);
   }
   // Check if R has static dimensions.
-  if (!R.getType().cast<ShapedType>().hasStaticShape()) {
+  if (!mlir::cast<ShapedType>(R.getType()).hasStaticShape()) {
     std::string message =
         "The recurrence weight tensor `R` must have static dimension.";
     return onnxToZHighUnsupportedReport(op.getOperation(), message);
@@ -1065,12 +1272,12 @@ bool isSuitableForZDNN<ONNXGRUOp>(
     return onnxToZHighUnsupportedReport(op.getOperation(), message);
   }
   // check if B and initial_h have static dimensions if given.
-  if (!isNoneValue(B) && !B.getType().cast<ShapedType>().hasStaticShape())
+  if (!isNoneValue(B) && !mlir::cast<ShapedType>(B.getType()).hasStaticShape())
     return onnxToZHighUnsupportedReport(
         op.getOperation(), "The bias tensor `B` must be static.");
   // check if B's direction dim is 1 or 2.
   if (!isNoneValue(B)) {
-    ArrayRef<int64_t> bShape = B.getType().cast<ShapedType>().getShape();
+    ArrayRef<int64_t> bShape = mlir::cast<ShapedType>(B.getType()).getShape();
     if (bShape[0] != 1 && bShape[0] != 2) {
       std::string message = "The first dimension of the bias tensor `B` (" +
                             std::to_string(bShape[0]) + ") must be 1 or 2.";
@@ -1083,12 +1290,14 @@ bool isSuitableForZDNN<ONNXGRUOp>(
         "The `activation_alpha` and `activation_beta` are not supported.");
   // zDNN support the default activations (["Sigmoid", "Tanh", "Tanh"]) only.
   if ((activations && (activations.value().size() > 0) &&
-          (activations.value()[0].cast<StringAttr>().getValue() !=
+          (mlir::cast<StringAttr>(activations.value()[0]).getValue() !=
               "Sigmoid")) ||
       (activations && (activations.value().size() > 1) &&
-          (activations.value()[1].cast<StringAttr>().getValue() != "Tanh")) ||
+          (mlir::cast<StringAttr>(activations.value()[1]).getValue() !=
+              "Tanh")) ||
       (activations && (activations.value().size() > 2) &&
-          (activations.value()[2].cast<StringAttr>().getValue() != "Tanh")))
+          (mlir::cast<StringAttr>(activations.value()[2]).getValue() !=
+              "Tanh")))
     return onnxToZHighUnsupportedReport(op.getOperation(),
         "The `activations` must be the default activations "
         "([Sigmoid, Tanh, Tanh]).");
@@ -1125,8 +1334,8 @@ template <>
 bool isSuitableForZDNN<ONNXMaxPoolSingleOutOp>(
     ONNXMaxPoolSingleOutOp op, const DimAnalysis *dimAnalysis) {
   // Check NNPA level.
-  if (!isCompatibleWithNNPALevel(NNPA_Z16))
-    return onnxToZHighInCompatibilityReport(op.getOperation());
+  if (!isCompatibleWithNNPALevel(NNPALevel::M14))
+    return onnxToZHighInCompatibilityReport(op.getOperation(), NNPALevel::M14);
 
   // Check data type.
   if (!isValidElementTypeAndRank(op.getOperation(), op.getX()))
@@ -1137,7 +1346,7 @@ bool isSuitableForZDNN<ONNXMaxPoolSingleOutOp>(
 
   if (!checkLegalityPoolOpsCommon<ONNXMaxPoolSingleOutOp,
           ONNXMaxPoolSingleOutOpAdaptor, ONNXMaxPoolSingleOutOpShapeHelper>(
-          op, op.getO_Y()))
+          op, op.getO_Y(), dimAnalysis))
     return false;
 
   // dilations not supported. Only default one is accepted.
@@ -1157,8 +1366,8 @@ template <>
 bool isSuitableForZDNN<ONNXAveragePoolOp>(
     ONNXAveragePoolOp op, const DimAnalysis *dimAnalysis) {
   // Check NNPA level.
-  if (!isCompatibleWithNNPALevel(NNPA_Z16))
-    return onnxToZHighInCompatibilityReport(op.getOperation());
+  if (!isCompatibleWithNNPALevel(NNPALevel::M14))
+    return onnxToZHighInCompatibilityReport(op.getOperation(), NNPALevel::M14);
 
   // Check data type.
   if (!isValidElementTypeAndRank(op.getOperation(), op.getX()))
@@ -1171,18 +1380,18 @@ bool isSuitableForZDNN<ONNXAveragePoolOp>(
             ") must be default one (0).");
 
   return checkLegalityPoolOpsCommon<ONNXAveragePoolOp, ONNXAveragePoolOpAdaptor,
-      ONNXAveragePoolOpShapeHelper>(op, op.getY());
+      ONNXAveragePoolOpShapeHelper>(op, op.getY(), dimAnalysis);
 }
 
-/// Check if input, output, kernel, strides, and paddingType for each axis meet
-/// parameter restrictions for conv2d. See "Conv2D Parameter Restrictions"
-/// in "zDNN API Reference"
+/// Check if input, output, kernel, strides, and paddingType for each axis
+/// meet parameter restrictions for conv2d. See "Conv2D Parameter
+/// Restrictions" in "zDNN API Reference"
 static bool checkConv2DParamRestrictions(Operation *op, int64_t inputDim,
     int64_t kernelDim, int64_t stride, int64_t outputDim,
     StringRef paddingType) {
   if (stride == 0) {
     // paddingType must be VALID_PADDING.
-    if (!paddingType.equals("VALID_PADDING")) {
+    if (!(paddingType == "VALID_PADDING")) {
       std::string message = "When the strides (" + std::to_string(stride) +
                             ") is zero, padding type (" + paddingType.str() +
                             ") must be VALID_PADDING.";
@@ -1225,9 +1434,9 @@ static bool checkConv2DParamRestrictions(Operation *op, int64_t inputDim,
           std::to_string(kernelDim) + ") must be less than or equal to 64.";
       return onnxToZHighUnsupportedReport(op, message);
     }
-    if (paddingType.equals("SAME_PADDING")) {
+    if (paddingType == "SAME_PADDING") {
       // height_out restriction.
-      int64_t reqOutputShape = ceil((float)inputDim / stride);
+      int64_t reqOutputShape = ceil(static_cast<float>(inputDim) / stride);
       if (outputDim != reqOutputShape) {
         std::string message =
             "When the strides (" + std::to_string(stride) +
@@ -1252,7 +1461,8 @@ static bool checkConv2DParamRestrictions(Operation *op, int64_t inputDim,
         return onnxToZHighUnsupportedReport(op, message);
       }
       // height_out restriction.
-      int64_t reqOutputShape = ceil((float)(inputDim - kernelDim + 1) / stride);
+      int64_t reqOutputShape =
+          ceil(static_cast<float>(inputDim - kernelDim + 1) / stride);
       if (outputDim != reqOutputShape) {
         std::string message =
             "When the strides (" + std::to_string(stride) +
@@ -1280,8 +1490,8 @@ template <>
 bool isSuitableForZDNN<ONNXConvOp>(
     ONNXConvOp op, const DimAnalysis *dimAnalysis) {
   // Check NNPA level.
-  if (!isCompatibleWithNNPALevel(NNPA_Z16))
-    return onnxToZHighInCompatibilityReport(op.getOperation());
+  if (!isCompatibleWithNNPALevel(NNPALevel::M14))
+    return onnxToZHighInCompatibilityReport(op.getOperation(), NNPALevel::M14);
 
   // Check data type.
   if (!isValidElementTypeAndRank(op.getOperation(), op.getX()))
@@ -1295,8 +1505,8 @@ bool isSuitableForZDNN<ONNXConvOp>(
   ONNXConvOpShapeHelper shapeHelper(op.getOperation(), {});
   shapeHelper.computeShapeAndAssertOnFailure();
 
-  ShapedType inputType = op.getX().getType().cast<ShapedType>();
-  ShapedType outputType = op.getY().getType().cast<ShapedType>();
+  ShapedType inputType = mlir::cast<ShapedType>(op.getX().getType());
+  ShapedType outputType = mlir::cast<ShapedType>(op.getY().getType());
   ArrayRef<int64_t> shapeInput = inputType.getShape();
   ArrayRef<int64_t> shapeOutput = outputType.getShape();
 
@@ -1317,7 +1527,8 @@ bool isSuitableForZDNN<ONNXConvOp>(
       ShapedType::isDynamic(shapeOutput[2]) ||
       ShapedType::isDynamic(shapeOutput[3]))
     return onnxToZHighUnsupportedReport(op,
-        "Height and/or width have dynamic dimensions. They are not support.");
+        "Height and/or width have dynamic dimensions. They are not "
+        "supported.");
 
   // Do not support group.
   if (operandAdaptor.getGroup() != 1)
@@ -1333,7 +1544,8 @@ bool isSuitableForZDNN<ONNXConvOp>(
   }
 
   // `getStrPaddingType` returns `SAME_PADDING`, `VALID_PADDING`, or empty.
-  // `zdnn_conv2d` only support padding for `SAME_PADDING` and `VALID_PADDING`.
+  // `zdnn_conv2d` only support padding for `SAME_PADDING` and
+  // `VALID_PADDING`.
   StringRef paddingType =
       getStrPaddingType<ONNXConvOp, ONNXConvOpAdaptor, ONNXConvOpShapeHelper>(
           op);
@@ -1380,14 +1592,14 @@ bool isSuitableForZDNN<ONNXConvOp>(
 template <>
 bool isSuitableForZDNN<ONNXBatchNormalizationInferenceModeOp>(
     ONNXBatchNormalizationInferenceModeOp op, const DimAnalysis *dimAnalysis) {
-  ShapedType inputType = op.getX().getType().cast<ShapedType>();
-  ShapedType outputType = op.getO_Y().getType().cast<ShapedType>();
+  ShapedType inputType = mlir::cast<ShapedType>(op.getX().getType());
+  ShapedType outputType = mlir::cast<ShapedType>(op.getO_Y().getType());
   ArrayRef<int64_t> shapeInput = inputType.getShape();
   ArrayRef<int64_t> shapeOutput = outputType.getShape();
 
   // Check NNPA level.
-  if (!isCompatibleWithNNPALevel(NNPA_Z16))
-    return onnxToZHighInCompatibilityReport(op.getOperation());
+  if (!isCompatibleWithNNPALevel(NNPALevel::M14))
+    return onnxToZHighInCompatibilityReport(op.getOperation(), NNPALevel::M14);
 
   // 4D tensors(N x C x H x W) are supported as input and output.
   if (shapeInput.size() != 4 || shapeOutput.size() != 4)
@@ -1405,4 +1617,20 @@ bool isSuitableForZDNN<ONNXReshapeOp>(
     ONNXReshapeOp op, const DimAnalysis *dimAnalysis) {
   // Noop Reshape is suitable for zAIU as this pass removes such reshape ops.
   return isIdentityReshape(op, dimAnalysis);
+}
+
+/// Check legality for ONNXDequantizeLinearOp.
+template <>
+bool isSuitableForZDNN<ONNXDequantizeLinearOp>(
+    ONNXDequantizeLinearOp op, const DimAnalysis *dimAnalysis) {
+  // The pass rewrite-onnx-for-zhigh has a rule to rewrite the pattern
+  // `DequantizeLinear (QLinearMatMul inputs)` where ND inputs are reshaped
+  // into 3D inputs. This rule uses the function template
+  // `addDynamicallyLegalOpFor` to define legality using a custom lambda
+  // function instead of `isSuitableForZDNN`. Hence, the legality here should
+  // not be used/called. This legality is here to complete the function
+  // template `addDynamicallyLegalOpFor` so that it's not failed when building
+  // the compiler.
+  llvm_unreachable("Not used");
+  return false;
 }

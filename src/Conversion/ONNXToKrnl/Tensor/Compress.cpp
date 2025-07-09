@@ -55,14 +55,14 @@ struct ONNXCompressOpLowering : public OpConversionPattern<ONNXCompressOp> {
     // Create temp memory for summing up the true value and init to zero.
     Type indexType = rewriter.getIndexType();
     MemRefType indexMemRefType = MemRefType::get({}, indexType);
+    // Scalar, ok to use alloca.
     Value sumMemRef = create.mem.alloca(indexMemRefType);
     create.krnl.store(zeroIE.getValue(), sumMemRef);
     // Now create a loop to iterate over all conditions.
     Value condMemRef = adaptor.getCondition();
     IndexExpr condShapeFirstRank = create.krnlIE.getShapeAsDim(condMemRef, 0);
-    ValueRange loopDef = create.krnl.defineLoops(1);
-    create.krnl.iterateIE(loopDef, loopDef, {zeroIE}, {condShapeFirstRank},
-        [&](KrnlBuilder createKrnl, ValueRange loopInd) {
+    create.krnl.forLoopIE(zeroIE, condShapeFirstRank, /*step*/ 1, /*par*/ false,
+        [&](const KrnlBuilder createKrnl, ValueRange loopInd) {
           MathBuilder createMath(createKrnl);
           // Load the condition
           Value currCond = createKrnl.load(condMemRef, loopInd); // Type i1.
@@ -87,9 +87,9 @@ struct ONNXCompressOpLowering : public OpConversionPattern<ONNXCompressOp> {
 
     // Convert the output type to MemRefType.
     Type convertedType = typeConverter->convertType(*op->result_type_begin());
-    assert(convertedType && convertedType.isa<MemRefType>() &&
+    assert(convertedType && mlir::isa<MemRefType>(convertedType) &&
            "Failed to convert type to MemRefType");
-    MemRefType memRefType = convertedType.cast<MemRefType>();
+    MemRefType memRefType = mlir::cast<MemRefType>(convertedType);
 
     // Insert an allocation and deallocation for the result of this operation.
     Value alloc =
@@ -143,24 +143,25 @@ struct ONNXCompressOpLowering : public OpConversionPattern<ONNXCompressOp> {
         }
       }
 
+      // Scalar, ok to use alloca.
       Value readIndexMemRef = create.mem.alloca(indexMemRefType);
       create.krnl.store(zeroIE.getValue(), readIndexMemRef);
 
       ValueRange inputLoopDef = create.krnl.defineLoops(inputRank);
       create.krnl.iterateIE(inputLoopDef, inputLoopDef, inputLbs, inputUbs,
-          [&](KrnlBuilder createKrnl, ValueRange inputLoopInd) {
+          [&](const KrnlBuilder createKrnl, ValueRange inputLoopInd) {
             MultiDialectBuilder<KrnlBuilder, MathBuilder, SCFBuilder> create(
                 createKrnl);
             Value readIndex = create.krnl.load(readIndexMemRef);
             Value inBound = trueVal;
             if (!skipCond)
               inBound = create.math.slt(readIndex, condUb);
-            create.scf.ifThenElse(inBound, [&](SCFBuilder &createSCF) {
+            create.scf.ifThenElse(inBound, [&](const SCFBuilder &createSCF) {
               MultiDialectBuilder<KrnlBuilder, MathBuilder, SCFBuilder> create(
                   createSCF);
               Value currCond = create.krnl.load(condMemRef, {readIndex});
               Value copy = create.math.neq(currCond, falseVal);
-              create.scf.ifThenElse(copy, [&](SCFBuilder &createSCF) {
+              create.scf.ifThenElse(copy, [&](const SCFBuilder &createSCF) {
                 MultiDialectBuilder<KrnlBuilder, MathBuilder> create(createSCF);
                 Value val = create.krnl.load(inputMemRef, inputLoopInd);
                 // Copy to output.
@@ -215,10 +216,9 @@ struct ONNXCompressOpLowering : public OpConversionPattern<ONNXCompressOp> {
         innerLbs.emplace_back(inputLbs[i]);
         innerUbs.emplace_back(inputUbs[i]);
       }
-      ValueRange axisLoopDef = create.krnl.defineLoops(1);
-      create.krnl.iterateIE(axisLoopDef, axisLoopDef, {inputLbs[axisValue]},
-          {inputUbs[axisValue]},
-          [&](KrnlBuilder createKrnl, ValueRange axisLoopInd) {
+      create.krnl.forLoopIE(inputLbs[axisValue], inputUbs[axisValue],
+          /*step*/ 1, /*par*/ false,
+          [&](const KrnlBuilder createKrnl, ValueRange axisLoopInd) {
             MultiDialectBuilder<KrnlBuilder, MathBuilder, SCFBuilder> create(
                 createKrnl);
             // Compute the test if we have enough condition value for current
@@ -227,12 +227,12 @@ struct ONNXCompressOpLowering : public OpConversionPattern<ONNXCompressOp> {
             Value inBound = trueVal;
             if (!skipCond)
               inBound = create.math.slt(readIndex, condUb);
-            create.scf.ifThenElse(inBound, [&](SCFBuilder &createSCF) {
+            create.scf.ifThenElse(inBound, [&](const SCFBuilder &createSCF) {
               MultiDialectBuilder<KrnlBuilder, MathBuilder, SCFBuilder> create(
                   createSCF);
               Value currCond = create.krnl.load(condMemRef, {readIndex});
               Value copy = create.math.neq(currCond, falseVal);
-              create.scf.ifThenElse(copy, [&](SCFBuilder &createSCF) {
+              create.scf.ifThenElse(copy, [&](const SCFBuilder &createSCF) {
                 KrnlBuilder createKrnl(createSCF);
                 // Load the write index.
                 Value writeIndex = createKrnl.load(writeIndexMemRef);
@@ -240,7 +240,7 @@ struct ONNXCompressOpLowering : public OpConversionPattern<ONNXCompressOp> {
                 ValueRange innerLoopDefs = createKrnl.defineLoops(innerRank);
                 createKrnl.iterateIE(innerLoopDefs, innerLoopDefs, innerLbs,
                     innerUbs,
-                    [&](KrnlBuilder createKrnl, ValueRange innerLoopInd) {
+                    [&](const KrnlBuilder createKrnl, ValueRange innerLoopInd) {
                       MathBuilder createMath(createKrnl);
                       // Compute access functions for input and output.
                       SmallVector<Value, 4> inputAccessFct, outputAccessFct;

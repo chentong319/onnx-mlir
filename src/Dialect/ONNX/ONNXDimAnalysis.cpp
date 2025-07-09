@@ -71,7 +71,7 @@ static std::optional<DimAnalysis::DimT> insertDimWhenUseful(const Value tensor,
   uint64_t axis = dimIndex;
 
   bool okToInsert = false;
-  if (tensor.isa<BlockArgument>()) {
+  if (mlir::isa<BlockArgument>(tensor)) {
     okToInsert = true;
   } else {
     Operation *op = tensor.getDefiningOp();
@@ -80,7 +80,7 @@ static std::optional<DimAnalysis::DimT> insertDimWhenUseful(const Value tensor,
     // need to insert it.
     if (isa<ONNXConstantOp>(op))
       okToInsert = false;
-    else if (auto dimOp = dyn_cast<ONNXDimOp>(op)) {
+    else if (auto dimOp = mlir::dyn_cast<ONNXDimOp>(op)) {
       // The correct axis is from ONNXDimOp.
       axis = dimOp.getAxis();
       okToInsert = true;
@@ -107,9 +107,8 @@ static bool handleAndTestInBound(int64_t &axis, ShapedType type) {
 /// Given a QuestionMarkIndexExpr representing a dynamic dimension, find the
 /// same dynamic dimensions in the inputs.
 static void findAndAddSameDim(const QuestionmarkIndexExpr &qmOuputIE,
-    mlir::Operation *op, mlir::ValueRange operands,
-    DimAnalysis::DimSetT &sameDims) {
-  mlir::Location loc = op->getLoc();
+    mlir::Operation *op, ValueRange operands, DimAnalysis::DimSetT &sameDims) {
+  Location loc = op->getLoc();
   IndexExprBuilderForAnalysis createIE(loc);
 
   // Cannot process if the question mark is not a specific one.
@@ -144,7 +143,7 @@ static void exploreSameDimsFromConsumingOperators(
       llvm::dbgs() << " - exploring ";
       op->dump();
     });
-    if (auto concatOp = dyn_cast<ONNXConcatOp>(op)) {
+    if (auto concatOp = mlir::dyn_cast<ONNXConcatOp>(op)) {
       // Dimensions on the same axis (except the concatenating axis) are the
       // same across all inputs.
       int64_t axis = concatOp.getAxis();
@@ -177,7 +176,7 @@ static void exploreSameDimsFromConsumingOperators(
       }
       continue;
     }
-    if (auto gemmOp = dyn_cast<ONNXGemmOp>(op)) {
+    if (auto gemmOp = mlir::dyn_cast<ONNXGemmOp>(op)) {
       Value A = gemmOp.getA();
       Value B = gemmOp.getB();
       if (!hasShapeAndRank(A) || !hasShapeAndRank(B))
@@ -199,7 +198,7 @@ static void exploreSameDimsFromConsumingOperators(
       }
       continue;
     }
-    if (auto gruOp = dyn_cast<ONNXGRUOp>(op)) {
+    if (auto gruOp = mlir::dyn_cast<ONNXGRUOp>(op)) {
       int64_t layout = gruOp.getLayout();
       // In LSTM, sequence_lens and batch_size are potentially dynamic.
       // Only batch_size is used in multiple inputs, so we'll check batch_size.
@@ -237,7 +236,7 @@ static void exploreSameDimsFromConsumingOperators(
       }
       continue;
     }
-    if (auto lstmOp = dyn_cast<ONNXLSTMOp>(op)) {
+    if (auto lstmOp = mlir::dyn_cast<ONNXLSTMOp>(op)) {
       int64_t layout = lstmOp.getLayout();
       // In LSTM, sequence_lens and batch_size are potentially dynamic.
       // Only batch_size is used in multiple inputs, so we'll check batch_size.
@@ -305,7 +304,7 @@ static void exploreSameDimsFromConsumingOperators(
       }
       continue;
     }
-    if (auto rnnOp = dyn_cast<ONNXRNNOp>(op)) {
+    if (auto rnnOp = mlir::dyn_cast<ONNXRNNOp>(op)) {
       int64_t layout = rnnOp.getLayout();
       // In LSTM, sequence_lens and batch_size are potentially dynamic.
       // Only batch_size is used in multiple inputs, so we'll check batch_size.
@@ -362,11 +361,11 @@ static bool exploreSameDimsUsingShapeHelper(const DimAnalysis::DimT &dim,
   ONNXOpShapeHelper *shapeHelper =
       shape_op.getShapeHelper(op, {}, nullptr, nullptr);
   // If no shape helper, or unimplemented, just abort.
-  if (!shapeHelper || !shapeHelper->isImplemented())
+  if (!shapeHelper)
     return false;
 
   // Compute shape.
-  if (failed(shapeHelper->computeShape())) {
+  if (!shapeHelper->isImplemented() || failed(shapeHelper->computeShape())) {
     delete shapeHelper;
     return false;
   }
@@ -425,10 +424,10 @@ static bool exploreSameDimsUsingShapeInput(const DimAnalysis::DimT &dim,
   // Below are ONNX operations we know that specify the output shape via an
   // operand. Sorted in the alphabetical order.
   Value shapeInput = nullptr;
-  if (auto onnxOp = dyn_cast<ONNXCenterCropPadOp>(op)) {
+  if (auto onnxOp = mlir::dyn_cast<ONNXCenterCropPadOp>(op)) {
     // `shape` stores shape information for dimensions specified by `axes`.
     // `outputDimIndex` must be in `axes` in order to get dim from `shape`.
-    auto outputType = cast<ShapedType>(onnxOp.getResult().getType());
+    auto outputType = mlir::cast<ShapedType>(onnxOp.getResult().getType());
     SmallVector<int64_t, 4> axesInt;
     ArrayAttr axes = onnxOp.getAxesAttr();
     if (axes) {
@@ -450,21 +449,21 @@ static bool exploreSameDimsUsingShapeInput(const DimAnalysis::DimT &dim,
     }
     if (found)
       shapeInput = onnxOp.getShape();
-  } else if (auto onnxOp = dyn_cast<ONNXConstantOfShapeOp>(op)) {
+  } else if (auto onnxOp = mlir::dyn_cast<ONNXConstantOfShapeOp>(op)) {
     // `input` stores shape information.
     shapeInput = onnxOp.getInput();
-  } else if (auto onnxOp = dyn_cast<ONNXExpandOp>(op)) {
+  } else if (auto onnxOp = mlir::dyn_cast<ONNXExpandOp>(op)) {
     // `shape` stores shape information.
     shapeInput = onnxOp.getShape();
-  } else if (auto onnxOp = dyn_cast<ONNXMaxUnpoolOp>(op)) {
+  } else if (auto onnxOp = mlir::dyn_cast<ONNXMaxUnpoolOp>(op)) {
     // Optional `output_shape` stores shape information.
     if (!isNoneValue(onnxOp.getOutputShape()))
       shapeInput = onnxOp.getOutputShape();
-  } else if (auto onnxOp = dyn_cast<ONNXReshapeOp>(op)) {
+  } else if (auto onnxOp = mlir::dyn_cast<ONNXReshapeOp>(op)) {
     // `shape` stores shape information. Only support `allow_zero == 0`.
     if (onnxOp.getAllowzero() == 0)
       shapeInput = onnxOp.getShape();
-  } else if (auto onnxOp = dyn_cast<ONNXTileOp>(op)) {
+  } else if (auto onnxOp = mlir::dyn_cast<ONNXTileOp>(op)) {
     // If input dimension i is 1, `repeats` i stores shape information.
     Type inputType = onnxOp.getInput().getType();
     ArrayRef<int64_t> inputShape = getShape(inputType);
@@ -503,7 +502,7 @@ DimAnalysis::DimAnalysis(ArrayRef<Value> vals) {
 
 DimAnalysis::DimAnalysis(ModuleOp moduleOp) {
   moduleOp.walk([&](Operation *op) {
-    if (auto funcOp = dyn_cast<func::FuncOp>(op)) {
+    if (auto funcOp = mlir::dyn_cast<func::FuncOp>(op)) {
       // Build dimensions for function arguments and results.
       buildFunctionArgsRes(funcOp);
     } else {
@@ -550,7 +549,7 @@ void DimAnalysis::buildFunctionArgsRes(func::FuncOp funcOp) {
   auto buildFor = [&paramSetMap, this](ValueRange args, ArrayAttr argAttrs) {
     for (size_t argPos = 0; argPos < args.size(); ++argPos) {
       Value arg = args[argPos];
-      auto tensorType = arg.getType().dyn_cast<RankedTensorType>();
+      auto tensorType = mlir::dyn_cast<RankedTensorType>(arg.getType());
       if (!tensorType)
         continue;
       // Get dim_params if exists.
@@ -587,9 +586,9 @@ void DimAnalysis::buildFunctionArgsRes(func::FuncOp funcOp) {
   // Build internal mappings for results.
   Operation *terminator = funcOp.getRegion().back().getTerminator();
   ValueRange resVals;
-  if (auto returnOp = dyn_cast<func::ReturnOp>(terminator))
+  if (auto returnOp = mlir::dyn_cast<func::ReturnOp>(terminator))
     resVals = returnOp.getOperands();
-  else if (auto returnOp = dyn_cast<ONNXReturnOp>(terminator))
+  else if (auto returnOp = mlir::dyn_cast<ONNXReturnOp>(terminator))
     resVals = returnOp.getOperands();
   ArrayAttr resAttrs = funcOp.getResAttrsAttr();
   buildFor(resVals, resAttrs);
@@ -603,7 +602,7 @@ void DimAnalysis::buildFunctionArgsRes(func::FuncOp funcOp) {
 }
 
 void DimAnalysis::build(Value val) {
-  if (auto tensorType = val.getType().dyn_cast<RankedTensorType>()) {
+  if (auto tensorType = mlir::dyn_cast<RankedTensorType>(val.getType())) {
     for (unsigned i = 0; i < tensorType.getRank(); ++i) {
       // Only care about dynamic dimensions.
       if (tensorType.isDynamicDim(i)) {
@@ -624,8 +623,8 @@ void DimAnalysis::build(Value val) {
 bool DimAnalysis::sameDim(
     Value tensor1, int64_t dimAxis1, Value tensor2, int64_t dimAxis2) const {
   // Handle negative axis and test if in bound.
-  ShapedType tensor1Type = tensor1.getType().cast<ShapedType>();
-  ShapedType tensor2Type = tensor2.getType().cast<ShapedType>();
+  ShapedType tensor1Type = mlir::cast<ShapedType>(tensor1.getType());
+  ShapedType tensor2Type = mlir::cast<ShapedType>(tensor2.getType());
   if (!handleAndTestInBound(dimAxis1, tensor1Type) ||
       !handleAndTestInBound(dimAxis2, tensor2Type))
     return false;
@@ -647,8 +646,8 @@ bool DimAnalysis::sameDim(
 bool DimAnalysis::sameDynDim(
     Value tensor1, int64_t dimAxis1, Value tensor2, int64_t dimAxis2) const {
   // Handle negative axis and test if in bound.
-  ShapedType tensor1Type = tensor1.getType().cast<ShapedType>();
-  ShapedType tensor2Type = tensor2.getType().cast<ShapedType>();
+  ShapedType tensor1Type = mlir::cast<ShapedType>(tensor1.getType());
+  ShapedType tensor2Type = mlir::cast<ShapedType>(tensor2.getType());
   if (!handleAndTestInBound(dimAxis1, tensor1Type) ||
       !handleAndTestInBound(dimAxis2, tensor2Type))
     return false;
@@ -669,7 +668,7 @@ bool DimAnalysis::sameDynDim(
 bool DimAnalysis::sameShape(Value tensor1, Value tensor2) const {
   if (!sameRank(tensor1, tensor2))
     return false;
-  unsigned rank = tensor1.getType().cast<ShapedType>().getRank();
+  unsigned rank = mlir::cast<ShapedType>(tensor1.getType()).getRank();
   // Check each dimension.
   for (unsigned i = 0; i < rank; ++i) {
     if (!sameDim(tensor1, i, tensor2, i))
@@ -681,8 +680,10 @@ bool DimAnalysis::sameShape(Value tensor1, Value tensor2) const {
 bool DimAnalysis::sameDynShape(Value tensor1, Value tensor2) const {
   if (!sameRank(tensor1, tensor2))
     return false;
-  ArrayRef<int64_t> shape1 = tensor1.getType().cast<ShapedType>().getShape();
-  ArrayRef<int64_t> shape2 = tensor2.getType().cast<ShapedType>().getShape();
+  ArrayRef<int64_t> shape1 =
+      mlir::cast<ShapedType>(tensor1.getType()).getShape();
+  ArrayRef<int64_t> shape2 =
+      mlir::cast<ShapedType>(tensor2.getType()).getShape();
   // Check each dimension.
   for (unsigned i = 0; i < shape1.size(); ++i) {
     int64_t dim1 = shape1[i];
@@ -700,7 +701,8 @@ bool DimAnalysis::sameDynShape(Value tensor1, Value tensor2) const {
 bool DimAnalysis::broadcastLastDim(Value tensor1, Value tensor2) const {
   if (!sameRank(tensor1, tensor2))
     return false;
-  ArrayRef<int64_t> shape1 = tensor1.getType().cast<ShapedType>().getShape();
+  ArrayRef<int64_t> shape1 =
+      mlir::cast<ShapedType>(tensor1.getType()).getShape();
   unsigned rank = shape1.size();
   // The last dimension of tensor1 must be 1, so that tensor1 is broadcasting
   // to tensor2.
@@ -738,10 +740,8 @@ void DimAnalysis::getONNXDimParams(
   DictionaryAttr dictAttr = llvm::dyn_cast<DictionaryAttr>(argResAttr[index]);
   if (dictAttr && dictAttr.contains("onnx.dim_params")) {
     // onnx.dim_params = dimIndex:dimParam,dimIndex:dimParam,...
-    StringRef dimParams = dictAttr.getNamed("onnx.dim_params")
-                              .value()
-                              .getValue()
-                              .cast<StringAttr>()
+    StringRef dimParams = mlir::cast<StringAttr>(
+        dictAttr.getNamed("onnx.dim_params").value().getValue())
                               .getValue();
     SmallVector<StringRef, 4> splittedDimParams;
     dimParams.split(splittedDimParams, ',');
@@ -850,7 +850,7 @@ void DimAnalysis::visitDim(
   // operation's shape helper for this purpose as much as possible.
 
   // Tensor is a block argument. There is no defining operator to explore.
-  if (tensor.isa<BlockArgument>())
+  if (mlir::isa<BlockArgument>(tensor))
     return;
 
   // Get the defining operator.
@@ -861,14 +861,14 @@ void DimAnalysis::visitDim(
     return;
 
   // DimOp
-  if (auto dimOp = dyn_cast<ONNXDimOp>(op)) {
+  if (auto dimOp = mlir::dyn_cast<ONNXDimOp>(op)) {
     DimAnalysis::DimT newSameDim(dimOp.getData(), dimOp.getAxis());
     sameDims.insert(newSameDim);
     return;
   }
 
   // CastOp
-  if (auto castOp = dyn_cast<ONNXCastOp>(op)) {
+  if (auto castOp = mlir::dyn_cast<ONNXCastOp>(op)) {
     if (auto d = insertDimWhenUseful(castOp.getInput(), dimIndex, sameDims))
       LLVM_DEBUG(llvm::dbgs() << "  - Added a new dim(" << d.value().first
                               << ", " << d.value().second << ")\n");
@@ -877,7 +877,7 @@ void DimAnalysis::visitDim(
 
   // All dimensions in the analysis must be dynamic. If not, something really
   // wrong happened.
-  ShapedType ty = tensor.getType().cast<ShapedType>();
+  ShapedType ty = mlir::cast<ShapedType>(tensor.getType());
   assert(ty.isDynamicDim(dimIndex) && "There is a static dim in the analysis. "
                                       "Something really wrong happened.");
 
@@ -932,7 +932,7 @@ void DimAnalysis::visitDim(
   }
 
   // ReshapeOp has some additional cases.
-  if (auto reshapeOp = dyn_cast<ONNXReshapeOp>(op)) {
+  if (auto reshapeOp = mlir::dyn_cast<ONNXReshapeOp>(op)) {
     if (reshapeOp.getAllowzero() != 0)
       return;
 
@@ -953,20 +953,22 @@ void DimAnalysis::visitDim(
     // inputs.
 
     // Get the dynamic dimension from data.
-    auto dataType = cast<RankedTensorType>(data.getType());
-    auto outputType = cast<RankedTensorType>(output.getType());
+    auto dataType = mlir::cast<RankedTensorType>(data.getType());
+    auto outputType = mlir::cast<RankedTensorType>(output.getType());
     // Check if there is only one dynamic dimension in the data and output.
     bool dataHasOneDynamicDim =
         (llvm::count(dataType.getShape(), ShapedType::kDynamic) == 1);
     bool outputHasOneDynamicDim =
         (llvm::count(outputType.getShape(), ShapedType::kDynamic) == 1);
     // Check if the products of static sizes in the data and output are equal.
-    // It's ok to count ShapedType::kDynamic (dynamic dimension) in the size.
     int64_t dataStaticSize = 1, outputStaticSize = 1;
-    for (int64_t i = 0; i < dataType.getRank(); ++i)
-      dataStaticSize *= dataType.getShape()[i];
-    for (int64_t i = 0; i < outputType.getRank(); ++i)
-      outputStaticSize *= outputType.getShape()[i];
+    for (int64_t i = 0; i < dataType.getRank(); ++i) {
+      dataStaticSize *= dataType.isDynamicDim(i) ? -1 : dataType.getShape()[i];
+    }
+    for (int64_t i = 0; i < outputType.getRank(); ++i) {
+      outputStaticSize *=
+          outputType.isDynamicDim(i) ? -1 : outputType.getShape()[i];
+    }
     // Conditions hold, the dynamic dimension can be from the data.
     if (dataHasOneDynamicDim && outputHasOneDynamicDim &&
         (dataStaticSize == outputStaticSize)) {
@@ -1062,13 +1064,13 @@ void ONNXDimAnalysisPass::runOnOperation() {
       Value val = ti.first;
       uint64_t dimAxis = ti.second;
       Location loc = val.getLoc();
-      if (auto arg = val.dyn_cast<BlockArgument>()) {
+      if (auto arg = mlir::dyn_cast<BlockArgument>(val)) {
         Block *owner = arg.getOwner();
         b = OpBuilder::atBlockBegin(owner);
       } else {
         Operation *op = val.getDefiningOp();
         b.setInsertionPointAfter(op);
-        if (auto dimOp = dyn_cast<ONNXDimOp>(op))
+        if (auto dimOp = mlir::dyn_cast<ONNXDimOp>(op))
           val = dimOp.getData();
       }
       DimAnalysis::DimT dim(val, dimAxis);

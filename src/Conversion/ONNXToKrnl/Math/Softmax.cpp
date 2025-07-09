@@ -21,17 +21,20 @@
 using namespace mlir;
 namespace onnx_mlir {
 
+// TODO: may consider exploiting SIMD.
+
 static void emitInnerLoops(KrnlBuilder &createKrnl, int64_t numberOfLoops,
     SmallVectorImpl<IndexExpr> &Lbs, SmallVectorImpl<IndexExpr> &Ubs,
     ValueRange outerIndices, Value input, Value alloc, Value zero,
     Value negInfinity, int64_t axis, bool coerced = true) {
-  int64_t rank = alloc.getType().cast<MemRefType>().getRank();
+  int64_t rank = mlir::cast<MemRefType>(alloc.getType()).getRank();
 
   ValueRange maxInits = ValueRange(negInfinity);
   // Compute the maximum value along axis.
   ValueRange maxLoops = createKrnl.defineLoops(numberOfLoops);
   auto maxLoop = createKrnl.iterateIE(maxLoops, maxLoops, Lbs, Ubs, maxInits,
-      [&](KrnlBuilder &createKrnl, ValueRange maxIndices, ValueRange iterArgs) {
+      [&](const KrnlBuilder &createKrnl, ValueRange maxIndices,
+          ValueRange iterArgs) {
         // Get last argument for the iterate body.
         Value iterArg = iterArgs.back();
 
@@ -55,9 +58,7 @@ static void emitInnerLoops(KrnlBuilder &createKrnl, int64_t numberOfLoops,
 
         Value max = iterArg;
         Value nextMax = create.krnl.load(input, maxLoopIVs);
-        auto maxCond = create.math.sgt(max, nextMax);
-        max = create.math.select(maxCond, max, nextMax);
-
+        max = create.math.max(max, nextMax);
         create.krnl.yield(max);
       });
   // Get the maximum value.
@@ -67,7 +68,8 @@ static void emitInnerLoops(KrnlBuilder &createKrnl, int64_t numberOfLoops,
   // Compute the sum of all values along axis.
   ValueRange sumLoops = createKrnl.defineLoops(numberOfLoops);
   auto sumLoop = createKrnl.iterateIE(sumLoops, sumLoops, Lbs, Ubs, sumInits,
-      [&](KrnlBuilder &createKrnl, ValueRange sumIndices, ValueRange iterArgs) {
+      [&](const KrnlBuilder &createKrnl, ValueRange sumIndices,
+          ValueRange iterArgs) {
         // Get last argument for the iterate body.
         Value iterArg = iterArgs.back();
 
@@ -106,7 +108,7 @@ static void emitInnerLoops(KrnlBuilder &createKrnl, int64_t numberOfLoops,
   // Compute the softmax.
   ValueRange softmaxLoops = createKrnl.defineLoops(numberOfLoops);
   createKrnl.iterateIE(softmaxLoops, softmaxLoops, Lbs, Ubs,
-      [&](KrnlBuilder &createKrnl, ValueRange softmaxIndices) {
+      [&](const KrnlBuilder &createKrnl, ValueRange softmaxIndices) {
         MultiDialectBuilder<KrnlBuilder, MathBuilder> create(createKrnl);
         IndexExprScope ieScope(createKrnl);
 
@@ -142,7 +144,7 @@ template <>
 void emitInstForSoftmax<ONNXSoftmaxV11Op>(ConversionPatternRewriter &rewriter,
     Operation *op, Location loc, Value alloc, Value input, Value zero,
     Value negInfinity, int64_t axis, bool enableParallel) {
-  int64_t rank = alloc.getType().cast<MemRefType>().getRank();
+  int64_t rank = mlir::cast<MemRefType>(alloc.getType()).getRank();
 
   MultiDialectBuilder<KrnlBuilder, IndexExprBuilderForKrnl> create(
       rewriter, loc);
@@ -176,12 +178,19 @@ void emitInstForSoftmax<ONNXSoftmaxV11Op>(ConversionPatternRewriter &rewriter,
       outerUbs.emplace_back(create.krnlIE.getShapeAsDim(input, i));
     if (enableParallel) {
       assert(axis > 0 && "bad assumption");
-      create.krnl.parallel(outerLoops[0]);
-      onnxToKrnlParallelReport(
-          op, true, 0, outerLbs[0], outerUbs[0], "softmax v11");
+      int64_t parId;
+      if (findSuitableParallelDimension(outerLbs, outerUbs, 0, 1, parId,
+              /*min iter for going parallel*/ 4)) {
+        create.krnl.parallel(outerLoops[0]);
+        onnxToKrnlParallelReport(
+            op, true, 0, outerLbs[0], outerUbs[0], "softmax v11");
+      } else {
+        onnxToKrnlParallelReport(
+            op, false, 0, outerLbs[0], outerUbs[0], "softmax v11");
+      }
     }
     create.krnl.iterateIE(outerLoops, outerLoops, outerLbs, outerUbs,
-        [&](KrnlBuilder &ck, ValueRange outerIndices) {
+        [&](const KrnlBuilder &ck, ValueRange outerIndices) {
           MultiDialectBuilder<MemRefBuilder, KrnlBuilder,
               IndexExprBuilderForKrnl>
               create(ck);
@@ -208,7 +217,7 @@ template <>
 void emitInstForSoftmax<ONNXSoftmaxOp>(ConversionPatternRewriter &rewriter,
     Operation *op, Location loc, Value alloc, Value input, Value zero,
     Value negInfinity, int64_t axis, bool enableParallel) {
-  int64_t rank = alloc.getType().cast<MemRefType>().getRank();
+  int64_t rank = mlir::cast<MemRefType>(alloc.getType()).getRank();
 
   MultiDialectBuilder<KrnlBuilder, IndexExprBuilderForKrnl> create(
       rewriter, loc);
@@ -228,13 +237,21 @@ void emitInstForSoftmax<ONNXSoftmaxOp>(ConversionPatternRewriter &rewriter,
       outerUbs.emplace_back(create.krnlIE.getShapeAsDim(input, i));
 
   if (enableParallel) {
-    create.krnl.parallel(outerLoops[0]);
-    onnxToKrnlParallelReport(op, true, 0, outerLbs[0], outerUbs[0], "softmax");
+    int64_t parId;
+    if (findSuitableParallelDimension(outerLbs, outerUbs, 0, 1, parId,
+            /*min iter for going parallel*/ 4)) {
+      create.krnl.parallel(outerLoops[0]);
+      onnxToKrnlParallelReport(
+          op, true, 0, outerLbs[0], outerUbs[0], "softmax");
+    } else {
+      onnxToKrnlParallelReport(op, false, 0, outerLbs[0], outerUbs[0],
+          "not enough work for softmax");
+    }
   }
 
   // Emit outer loops.
   create.krnl.iterateIE(outerLoops, outerLoops, outerLbs, outerUbs,
-      [&](KrnlBuilder &ck, ValueRange outerIndices) {
+      [&](const KrnlBuilder &ck, ValueRange outerIndices) {
         MultiDialectBuilder<MemRefBuilder, KrnlBuilder, IndexExprBuilderForKrnl>
             create(ck);
         IndexExprScope ieScope(ck);
@@ -279,9 +296,9 @@ struct ONNXSoftmaxLowering : public OpConversionPattern<SoftmaxOp> {
     // Convert the output type to MemRefType.
     Type convertedType =
         this->typeConverter->convertType(*op->result_type_begin());
-    assert(convertedType && convertedType.isa<MemRefType>() &&
+    assert(convertedType && mlir::isa<MemRefType>(convertedType) &&
            "Failed to convert type to MemRefType");
-    MemRefType memRefType = convertedType.cast<MemRefType>();
+    MemRefType memRefType = mlir::cast<MemRefType>(convertedType);
 
     int64_t rank = memRefType.getRank();
     int64_t axis = adaptor.getAxis();

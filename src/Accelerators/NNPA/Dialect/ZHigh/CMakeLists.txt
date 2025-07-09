@@ -23,6 +23,10 @@ add_onnx_mlir_library(OMZHighOps
   ZHighOps/MatMul/MatMul.cpp
   ZHighOps/MeanReduce2D/MeanReduce2D.cpp
   ZHighOps/Pooling/Pooling.cpp
+  ZHighOps/QuantizedMatMul/QuantizedMatMul.cpp
+  ZHighOps/QuantizedStick/QuantizedStick.cpp
+  ZHighOps/Reduction/Reduction.cpp
+  ZHighOps/Reshape/Reshape.cpp
   ZHighOps/Softmax/Softmax.cpp
   ZHighOps/Stick/Stick.cpp
   ZHighOps/StickForGRU/StickForGRU.cpp
@@ -47,6 +51,7 @@ add_onnx_mlir_library(OMZHighOps
   OMONNXOps # Use ONNXShapeHelper 
   OMLayoutHelper
   OMShapeHelperOpInterface
+  OMNNPACompilerOptions
   MLIRIR
 
   ACCEL_INCLUDE_DIRS PRIVATE

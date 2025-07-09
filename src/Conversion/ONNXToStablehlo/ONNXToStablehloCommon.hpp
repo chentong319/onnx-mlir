@@ -13,7 +13,8 @@
 //
 //===----------------------------------------------------------------------===//
 
-#pragma once
+#ifndef ONNX_MLIR_ONNX_TO_STABLEHLO_H
+#define ONNX_MLIR_ONNX_TO_STABLEHLO_H
 
 #include "mlir/Dialect/Affine/IR/AffineOps.h"
 #include "mlir/Dialect/Linalg/IR/Linalg.h"
@@ -70,7 +71,7 @@ template <typename T>
 Value getShapedFloat(Location loc, ConversionPatternRewriter &rewriter,
     const T &value, Value &inp) {
   Value broadcastedValue;
-  ShapedType inpType = inp.getType().cast<ShapedType>();
+  ShapedType inpType = mlir::cast<ShapedType>(inp.getType());
   if (inpType.hasStaticShape())
     broadcastedValue = rewriter.create<stablehlo::ConstantOp>(
         loc, DenseElementsAttr::get(inpType,
@@ -92,7 +93,7 @@ template <typename T>
 Value getShapedInt(Location loc, ConversionPatternRewriter &rewriter,
     const T &value, Value &inp) {
   Value broadcastedValue;
-  ShapedType inpType = inp.getType().cast<ShapedType>();
+  ShapedType inpType = mlir::cast<ShapedType>(inp.getType());
   if (inpType.hasStaticShape())
     broadcastedValue = rewriter.create<stablehlo::ConstantOp>(
         loc, DenseElementsAttr::get(inpType,
@@ -215,4 +216,7 @@ void populateLoweringONNXTransposeOpToStablehloPattern(
     RewritePatternSet &, MLIRContext *);
 void populateLoweringONNXUnsqueezeOpToStablehloPattern(
     RewritePatternSet &, MLIRContext *);
+void populateLoweringONNXSoftmaxOpToStablehloPattern(
+    RewritePatternSet &patterns, MLIRContext *ctx);
 } // namespace onnx_mlir
+#endif

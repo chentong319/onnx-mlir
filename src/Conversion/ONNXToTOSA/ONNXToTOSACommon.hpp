@@ -4,8 +4,8 @@
 
 //====------ ONNXToTOSACommon.hpp - ONNX dialects to TOSA lowering --------===//
 //
-// Copyright 2020 The TensorFlow Authors. All Rights Reserved.
-// Copyright (c) 2022-2023 Advanced Micro Devices, Inc.
+// Copyright 2020-2024 The TensorFlow Authors. All Rights Reserved.
+// Copyright (c) 2022-2024 Advanced Micro Devices, Inc.
 //
 // =============================================================================
 //
@@ -14,11 +14,12 @@
 //
 //===----------------------------------------------------------------------===//
 
-#pragma once
+#ifndef ONNX_MLIR_ONNX_TO_TOSA_H
+#define ONNX_MLIR_ONNX_TO_TOSA_H
 
 #include "DialectBuilder.hpp"
 #include "ONNXToTOSALegalizeUtils.hpp"
-#include "mlir/Dialect/Quant/QuantTypes.h"
+#include "mlir/Dialect/Quant/IR/QuantTypes.h"
 #include "mlir/Dialect/Tosa/IR/TosaOps.h"
 
 #include "mlir/IR/MLIRContext.h"
@@ -77,14 +78,15 @@ mlir::FailureOr<mlir::Value> convertPoolOp(
 //===----------------------------------------------------------------------===//
 
 inline bool isTOSASignedInt(mlir::Type type) {
-  mlir::IntegerType intType = type.dyn_cast<mlir::IntegerType>();
+  mlir::IntegerType intType = mlir::dyn_cast<mlir::IntegerType>(type);
   std::set<unsigned> intWidth{1, 8, 16, 32, 48, 64};
   return intType && intType.isSignless() &&
          (intWidth.find(intType.getWidth()) != intWidth.end());
 }
 
 inline bool isTOSAFloat(mlir::Type type) {
-  return type.isa<mlir::BFloat16Type, mlir::Float16Type, mlir::Float32Type>();
+  return mlir::isa<mlir::BFloat16Type, mlir::Float16Type, mlir::Float32Type>(
+      type);
 }
 
 //===----------------------------------------------------------------------===//
@@ -123,3 +125,4 @@ void populateLoweringONNXReshapeOpToTOSAPattern(mlir::ConversionTarget &,
 void populateLoweringONNXResizeOpToTOSAPattern(mlir::ConversionTarget &,
     mlir::RewritePatternSet &, mlir::TypeConverter &, mlir::MLIRContext *);
 } // namespace onnx_mlir
+#endif

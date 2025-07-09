@@ -4,7 +4,7 @@
 
 //===------------------ Upsample.cpp - ONNX Operations --------------------===//
 //
-// Copyright 2019-2023 The IBM Research Authors.
+// Copyright 2019-2024 The IBM Research Authors.
 //
 // =============================================================================
 //
@@ -44,7 +44,7 @@ LogicalResult ONNXUpsampleOpShapeHelper::computeShape() {
   auto scalesConstOp = getONNXConstantOp(operandAdaptor.getScales());
   if (scalesConstOp) {
     // Can get the scales as constant.
-    auto valueAttr = scalesConstOp.getValueAttr().dyn_cast<ElementsAttr>();
+    auto valueAttr = mlir::dyn_cast<ElementsAttr>(scalesConstOp.getValueAttr());
     if (!valueAttr)
       return op->emitError("Scales constant is not an ElementsAttr");
     for (int64_t i = 0; i < xRank; ++i) {
@@ -52,7 +52,7 @@ LogicalResult ONNXUpsampleOpShapeHelper::computeShape() {
         // When shape is also constant, replace questionmark by actual value.
         double dim = xShape[i].getLiteral();
         double scale = valueAttr.getValues<FloatAttr>()[i].getValueAsDouble();
-        outputDims[i] = LiteralIndexExpr((int64_t)(dim * scale));
+        outputDims[i] = LitIE(static_cast<int64_t>(dim * scale));
       }
     }
   }
@@ -71,11 +71,11 @@ LogicalResult ONNXUpsampleOp::verify() {
   if (!hasShapeAndRank(getX()) || !hasShapeAndRank(getScales()))
     return success();
 
-  auto inputTy = getX().getType().cast<RankedTensorType>();
+  auto inputTy = mlir::cast<RankedTensorType>(getX().getType());
   int32_t inputRank = inputTy.getShape().size();
 
   // Safety checks on scale argument
-  auto scalesTy = getScales().getType().cast<RankedTensorType>();
+  auto scalesTy = mlir::cast<RankedTensorType>(getScales().getType());
   if (scalesTy.getShape().size() != 1) {
     return emitError("Scales tensor must be rank 1");
   }
@@ -88,7 +88,7 @@ LogicalResult ONNXUpsampleOp::verify() {
   if (!scalesConstOp) {
     return success();
   }
-  auto valueAttr = scalesConstOp.getValueAttr().dyn_cast<ElementsAttr>();
+  auto valueAttr = mlir::dyn_cast<ElementsAttr>(scalesConstOp.getValueAttr());
   if (!valueAttr) {
     return emitError("Scales constant is not an ElementsAttr");
   }
@@ -116,7 +116,8 @@ LogicalResult ONNXUpsampleOp::inferShapes(
   if (!hasShapeAndRank(getX()) || !hasShapeAndRank(getScales()))
     return success();
 
-  Type elementType = getX().getType().cast<RankedTensorType>().getElementType();
+  Type elementType =
+      mlir::cast<RankedTensorType>(getX().getType()).getElementType();
   ONNXUpsampleOpShapeHelper shapeHelper(getOperation(), {});
   return shapeHelper.computeShapeAndUpdateType(elementType);
 }

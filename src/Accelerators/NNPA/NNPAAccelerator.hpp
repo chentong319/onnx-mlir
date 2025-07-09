@@ -4,7 +4,7 @@
 
 //===-------------------------- NNPAAccelerator.hpp ----------------------===//
 //
-// Copyright 2022 The IBM Research Authors.
+// Copyright 2022-2024 The IBM Research Authors.
 //
 // ===========================================================================
 //
@@ -12,7 +12,8 @@
 //
 //===---------------------------------------------------------------------===//
 
-#pragma once
+#ifndef ONNX_MLIR_NNPA_ACCELERATOR_H
+#define ONNX_MLIR_NNPA_ACCELERATOR_H
 
 #include "mlir/IR/BuiltinTypes.h"
 #include "src/Accelerators/Accelerator.hpp"
@@ -46,7 +47,7 @@ public:
   uint64_t getVersionNumber() const final;
 
   //===--------------------------------------------------------------------===//
-  // Hooks for onnx-mlir-opt driver
+  // Hooks for onnx-mlir driver
   //===--------------------------------------------------------------------===//
   virtual void addPasses(mlir::OwningOpRef<mlir::ModuleOp> &module,
       mlir::PassManager &pm, onnx_mlir::EmissionTargetType &emissionTarget,
@@ -56,6 +57,7 @@ public:
   //===--------------------------------------------------------------------===//
   virtual void registerDialects(mlir::DialectRegistry &registry) const final;
   virtual void registerPasses(int optLevel) const final;
+  virtual void configurePasses() const final;
   //===--------------------------------------------------------------------===//
   // Hooks for onnx-to-krnl pass
   //===--------------------------------------------------------------------===//
@@ -79,3 +81,4 @@ public:
 
 } // namespace accel
 } // namespace onnx_mlir
+#endif

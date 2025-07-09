@@ -41,9 +41,9 @@ public:
 
   LogicalResult matchAndRewrite(Operation *op, ArrayRef<Value> operands,
       ConversionPatternRewriter &rewriter) const override {
-    auto krnlVectorTypeCastOp = cast<KrnlVectorTypeCastOp>(op);
+    auto krnlVectorTypeCastOp = mlir::cast<KrnlVectorTypeCastOp>(op);
     MemRefType sourceType =
-        krnlVectorTypeCastOp.getOperand().getType().cast<MemRefType>();
+        mlir::cast<MemRefType>(krnlVectorTypeCastOp.getOperand().getType());
     MemRefType targetType = krnlVectorTypeCastOp.getType();
     if (!isSupportedMemRefType(targetType) ||
         !isSupportedMemRefType(sourceType))
@@ -62,7 +62,7 @@ public:
 
     // Get memRefDescriptor, the new memref descriptor.
     MemRefDescriptor memRefDescriptor =
-        MemRefDescriptor::undef(rewriter, loc, targetStructType);
+        MemRefDescriptor::poison(rewriter, loc, targetStructType);
     auto targetElementPtrType = memRefDescriptor.getElementPtrType();
 
     // Set the new memref to the same buffer as the source memref.
@@ -78,7 +78,7 @@ public:
 
     int64_t offset;
     SmallVector<int64_t, 4> strides;
-    if (failed(getStridesAndOffset(targetType, strides, offset)))
+    if (failed(targetType.getStridesAndOffset(strides, offset)))
       return failure();
 
     // Unhandled dynamic offset.
@@ -114,7 +114,7 @@ public:
       // There is the implicit expectation that the last dimension of the
       // original memory is a multiple of the vector length.
       Value vecWidth = createIndexAttrConstant(rewriter, loc, indexType,
-          targetType.getElementType().cast<ShapedType>().getNumElements());
+          mlir::cast<ShapedType>(targetType.getElementType()).getNumElements());
       sizes.push_back(rewriter.create<LLVM::UDivOp>(loc,
           srcMemRefDesc.size(rewriter, loc, sourceType.getRank() - 1),
           vecWidth));

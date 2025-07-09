@@ -23,8 +23,8 @@
 #include <stdio.h>
 #include <stdlib.h>
 
-#include "zDNNExtension/zDNNExtension.h"
 #include "zdnn.h"
+#include "zdnnx/zdnnx.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -71,8 +71,8 @@ extern "C" {
  *
  * OMInitAccelNNPA() is thread safe, and is guaranteed to set
  * OMIsInitAccelNNPA=1 once any other threads are guaranteed to see the full
- * effects of the zdnn_init(). Because Z does not has a release consistency
- * memory subsystem, we don't need a hard memory fence between zdnn_init() and
+ * effects of the zdnnx_init(). Because Z does not has a release consistency
+ * memory subsystem, we don't need a hard memory fence between zdnnx_init() and
  * OMIsInitAccelNNPA=1.
  *
  * For the OMShutdownAccelNNPA(), we simply set the OMIsInitAccelNNPA flag to
@@ -104,14 +104,28 @@ void OMInitAccelNNPA() {
     /* Test again in the mutex to see if accelerator is not initialized. */
     if (!OMIsInitAccelNNPA) {
       /* Still uninitialized, actual init. */
-      zdnn_init();
-      /* Initialize settings for ztensor splitting. */
-      zDNNExtensionInit();
+      zdnnx_init();
       /* No need for a fence due to strong consistency. */
       OMIsInitAccelNNPA = 1;
     } /* Release mutex. */
     pthread_mutex_unlock(&OMMutexForInitShutdownNNPA);
   }
+}
+
+/*!
+ *  \brief Function to obtain the zDNN versions from the input versionNum.
+ *
+ *  The zDNN major, minor, and patch versions are extracted from the input
+ *  versionNum and set in *ver_major, *ver_minor, and *ver_patch.
+ *
+ *  See the zDNN documentation for the definition of the major, minor, and
+ *  patch versions.
+ */
+void getZDNNVersions(uint32_t versionNum, unsigned long long *ver_major,
+    unsigned long long *ver_minor, unsigned long long *ver_patch) {
+  *ver_major = versionNum >> 16;
+  *ver_minor = (versionNum >> 8) & 0xff;
+  *ver_patch = versionNum & 0xff;
 }
 
 /*!
@@ -145,9 +159,7 @@ uint64_t OMInitCompatibleAccelNNPA(uint64_t versionNum) {
     /* Test again in the mutex to see if accelerator is not initialized. */
     if (!OMIsInitAccelNNPA) {
       /* Still uninitialized, actual init. */
-      zdnn_init();
-      /* Initialize settings for ztensor splitting. */
-      zDNNExtensionInit();
+      zdnnx_init();
       /* Check if version is compatible */
       if (zdnn_is_version_runnable((uint32_t)versionNum))
         isCompatible = 1;
@@ -159,6 +171,12 @@ uint64_t OMInitCompatibleAccelNNPA(uint64_t versionNum) {
   }
   /* If not compatible, generate an error here. */
   if (!isCompatible) {
+    /* First, lets check that NNPA is even installed*/
+    if (!zdnn_is_nnpa_installed()) {
+      fprintf(stderr, "This model was compiled to use integrated accelerator "
+                      "for AI. Check that the model is running on hardware "
+                      "z16+ and that NNPA is enabled.");
+    }
     /* Grab mutex. */
     pthread_mutex_lock(&OMMutexForInitShutdownNNPA);
     /* Check again if we have a compatible model. */
@@ -168,16 +186,37 @@ uint64_t OMInitCompatibleAccelNNPA(uint64_t versionNum) {
     pthread_mutex_unlock(&OMMutexForInitShutdownNNPA);
     if (!isCompatible) {
       /* Code below has to agree with zdnn.h convention. */
-      unsigned long long ver_major = versionNum >> 16;
-      unsigned long long ver_minor = (versionNum >> 8) & 0xff;
-      unsigned long long ver_patch = versionNum & 0xff;
+      /* Create and initialize variables to 0 to avoid code scan error. */
+      unsigned long long mod_ver_major = 0;
+      unsigned long long mod_ver_minor = 0;
+      unsigned long long mod_ver_patch = 0;
+      /* Invoke getZDNNVersions() to extract the zDNN major, minor, and patch
+       * version numbers from the model's version number. */
+      getZDNNVersions(
+          versionNum, &mod_ver_major, &mod_ver_minor, &mod_ver_patch);
+      uint32_t zDNNLibaryVersion = zdnn_get_library_version();
+      unsigned long long lib_ver_major = 0;
+      unsigned long long lib_ver_minor = 0;
+      unsigned long long lib_ver_patch = 0;
+      /* Invoke getZDNNVersions() to extract the zDNN major, minor, and patch
+       * version numbers from the zDNN library version number. */
+      getZDNNVersions(
+          zDNNLibaryVersion, &lib_ver_major, &lib_ver_minor, &lib_ver_patch);
+      uint32_t zDNNAPIMaxVersion = zdnn_get_max_runnable_version();
+      unsigned long long api_ver_major = 0;
+      unsigned long long api_ver_minor = 0;
+      unsigned long long api_ver_patch = 0;
+      /* Invoke getZDNNVersions() to extract the zDNN major, minor, and patch
+       * version numbers from the zDNN maximum API version number. */
+      getZDNNVersions(
+          zDNNAPIMaxVersion, &api_ver_major, &api_ver_minor, &api_ver_patch);
       fprintf(stderr,
-          "Model is running on hardware that is not compatible with "
-          "the zDNN library that this model was compiled for "
-          "(version num %llu.%llu.%llu). Please check that the model is "
-          "running on hardware with an integrated accelerator for AI "
-          "(z16 +) that supports the required zDNN library version.\n ",
-          ver_major, ver_minor, ver_patch);
+          "Model requires zDNN API version %llu.%llu.%llu. The system has "
+          "zDNN library version %llu.%llu.%llu and supports up to zDNN API"
+          " version %llu.%llu.%llu.\n",
+          mod_ver_major, mod_ver_minor, mod_ver_patch, lib_ver_major,
+          lib_ver_minor, lib_ver_patch, api_ver_major, api_ver_minor,
+          api_ver_patch);
       errno = EPERM;
       return false;
     }

@@ -37,7 +37,7 @@ struct MathFunctionName {
 
 template <>
 struct MathFunctionName<KrnlErfOp> {
-  static std::string functionName(mlir::Type type) {
+  static std::string functionName(Type type) {
     if (type.isF32())
       return "erff";
     if (type.isF64())
@@ -48,7 +48,7 @@ struct MathFunctionName<KrnlErfOp> {
 
 template <>
 struct MathFunctionName<KrnlAcosOp> {
-  static std::string functionName(mlir::Type type) {
+  static std::string functionName(Type type) {
     if (type.isF32())
       return "acosf";
     if (type.isF64())
@@ -59,7 +59,7 @@ struct MathFunctionName<KrnlAcosOp> {
 
 template <>
 struct MathFunctionName<KrnlAcoshOp> {
-  static std::string functionName(mlir::Type type) {
+  static std::string functionName(Type type) {
     if (type.isF32())
       return "acoshf";
     if (type.isF64())
@@ -70,7 +70,7 @@ struct MathFunctionName<KrnlAcoshOp> {
 
 template <>
 struct MathFunctionName<KrnlAsinOp> {
-  static std::string functionName(mlir::Type type) {
+  static std::string functionName(Type type) {
     if (type.isF32())
       return "asinf";
     if (type.isF64())
@@ -81,7 +81,7 @@ struct MathFunctionName<KrnlAsinOp> {
 
 template <>
 struct MathFunctionName<KrnlAsinhOp> {
-  static std::string functionName(mlir::Type type) {
+  static std::string functionName(Type type) {
     if (type.isF32())
       return "asinhf";
     if (type.isF64())
@@ -92,7 +92,7 @@ struct MathFunctionName<KrnlAsinhOp> {
 
 template <>
 struct MathFunctionName<KrnlAtanOp> {
-  static std::string functionName(mlir::Type type) {
+  static std::string functionName(Type type) {
     if (type.isF32())
       return "atanf";
     if (type.isF64())
@@ -103,7 +103,7 @@ struct MathFunctionName<KrnlAtanOp> {
 
 template <>
 struct MathFunctionName<KrnlTanOp> {
-  static std::string functionName(mlir::Type type) {
+  static std::string functionName(Type type) {
     if (type.isF32())
       return "tanf";
     if (type.isF64())
@@ -114,7 +114,7 @@ struct MathFunctionName<KrnlTanOp> {
 
 template <>
 struct MathFunctionName<KrnlAtanhOp> {
-  static std::string functionName(mlir::Type type) {
+  static std::string functionName(Type type) {
     if (type.isF32())
       return "atanhf";
     if (type.isF64())
@@ -125,7 +125,7 @@ struct MathFunctionName<KrnlAtanhOp> {
 
 template <>
 struct MathFunctionName<KrnlIsInfOp> {
-  static std::string functionName(mlir::Type type) {
+  static std::string functionName(Type type) {
     if (type.isF32())
 #if (__APPLE__)
       return "__isinff";
@@ -140,7 +140,7 @@ struct MathFunctionName<KrnlIsInfOp> {
 
 template <>
 struct MathFunctionName<KrnlIsNaNOp> {
-  static std::string functionName(mlir::Type type) {
+  static std::string functionName(Type type) {
 
     if (type.isF32())
 #if (__APPLE__)
@@ -168,23 +168,23 @@ public:
     Location loc = op->getLoc();
 
     // get the LLVM type for the function args and result
-    mlir::Type inType = op->getOperand(0).getType();
-    mlir::Type outType = op->getResultTypes().front();
-    mlir::Type llvmInType, llvmOutType;
+    Type inType = op->getOperand(0).getType();
+    Type outType = op->getResultTypes().front();
+    Type llvmInType, llvmOutType;
     if (inType.isF16())
-      llvmInType = FloatType::getF16(context);
+      llvmInType = Float16Type::get(context);
     else if (inType.isF32())
-      llvmInType = FloatType::getF32(context);
+      llvmInType = Float32Type::get(context);
     else if (inType.isF64())
-      llvmInType = FloatType::getF64(context);
+      llvmInType = Float64Type::get(context);
     else if (inType.isBF16())
-      llvmInType = FloatType::getBF16(context);
+      llvmInType = Float64Type::get(context);
     if (outType.isInteger(1))
       llvmOutType = IntegerType::get(context, 1);
     else if (outType.isF32())
-      llvmOutType = FloatType::getF32(context);
+      llvmOutType = Float32Type::get(context);
     else if (outType.isF64())
-      llvmOutType = FloatType::getF64(context);
+      llvmOutType = Float64Type::get(context);
 
     // Insert and/or get reference to elementary math function declaration.
     assert(
@@ -207,16 +207,15 @@ private:
   // declare float <mathFuncName>(float)
   //
   FlatSymbolRefAttr getOrInsertUnaryMathFunction(PatternRewriter &rewriter,
-      ModuleOp module, std::string mathFuncName, mlir::Type llvmInType,
-      mlir::Type llvmOutType) const {
+      ModuleOp module, std::string mathFuncName, Type llvmInType,
+      Type llvmOutType) const {
     auto *context = module.getContext();
     if (module.lookupSymbol<LLVM::LLVMFuncOp>(mathFuncName))
       return SymbolRefAttr::get(context, mathFuncName);
 
     // Create function declaration.
-    // auto llvmF32Ty = FloatType::get(context);
-    auto llvmFnType = LLVM::LLVMFunctionType::get(
-        llvmOutType, ArrayRef<mlir::Type>({llvmInType}));
+    auto llvmFnType =
+        LLVM::LLVMFunctionType::get(llvmOutType, ArrayRef<Type>({llvmInType}));
 
     // Insert the unary math function into the body of the parent module.
     PatternRewriter::InsertionGuard insertGuard(rewriter);

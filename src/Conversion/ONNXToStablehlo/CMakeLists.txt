@@ -8,6 +8,7 @@ set(STABLEHLO_LIBS
   StablehloAssemblyFormat
   StablehloBase
   StablehloBroadcastUtils
+  StablehloLinalgTransforms
   StablehloOps
   StablehloPasses
   StablehloReferenceAxes
@@ -46,6 +47,7 @@ add_onnx_mlir_library(OMONNXToStablehlo
   Math/Gemm.cpp
   Math/MatMul.cpp
   Math/Reduction.cpp
+  Math/Softmax.cpp
   NN/Conv.cpp
   NN/ConvTranspose.cpp
   NN/Normalization.cpp

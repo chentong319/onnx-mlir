@@ -32,9 +32,11 @@
 
 #include "src/Accelerators/NNPA/Compiler/NNPACompilerOptions.hpp"
 #include "src/Accelerators/NNPA/Compiler/NNPACompilerUtils.hpp"
+#include "src/Accelerators/NNPA/Compiler/ZHighDisposableGarbageCollector.hpp"
 #include "src/Accelerators/NNPA/Dialect/ZHigh/ZHighOps.hpp"
 #include "src/Accelerators/NNPA/Dialect/ZLow/ZLowOps.hpp"
 #include "src/Accelerators/NNPA/Pass/NNPAPasses.hpp"
+#include "src/Accelerators/NNPA/Support/NNPALimit.hpp"
 #include "src/Compiler/CompilerOptions.hpp"
 #include "src/Compiler/CompilerPasses.hpp"
 #include "src/Pass/Passes.hpp"
@@ -47,7 +49,60 @@ using namespace onnx_mlir;
 namespace onnx_mlir {
 
 void configurePassesNNPA() {
-  configureOnnxToZHighLoweringPass(optReport == OptReport::NNPAUnsupportedOps);
+  // z16 does not support for hardware saturation.
+  // So, force its usage to compiler generated sticks.
+  if (!nnpaDisableSaturation && isLessEqualNNPALevel(NNPALevel::M14))
+    nnpaDisableCompilerStickUnstick = false;
+
+  // Configure ONNXToZHighLoweringPass.
+  bool isDynQuant = !nnpaQuantDynamic.empty();
+  // Default/auto mode: symmetric for weighs and asymmetric for activations.
+  bool isActivationSym = false;
+  bool isWeightSym = true;
+  std::vector<std::string> quantOpTypes;
+  if (isDynQuant) {
+    // Set options for activations and weights if they are given.
+    // When auto mode is specified, the other specified options are ignored.
+    if (!llvm::is_contained(nnpaQuantDynamic, NNPAQuantOptions::autoQuantOpt)) {
+      for (unsigned i = 0; i < nnpaQuantDynamic.size(); ++i) {
+        switch (nnpaQuantDynamic[i]) {
+        case NNPAQuantOptions::symWeight:
+          isWeightSym = true;
+          break;
+        case NNPAQuantOptions::asymWeight:
+          isWeightSym = false;
+          break;
+        case NNPAQuantOptions::symActivation:
+          isActivationSym = true;
+          break;
+        case NNPAQuantOptions::asymActivation:
+          isActivationSym = false;
+          break;
+        default:
+          llvm_unreachable("Unsupported quantization options");
+          break;
+        }
+      }
+    }
+    if (!isWeightSym) {
+      // TODO: Support asymmetric quantiation for weights.
+      llvm::outs()
+          << "Asymmetric quantization for weights is not yet supported. "
+             "Turning off quantization.\n";
+      isDynQuant = false;
+    }
+    if (nnpaQuantOpTypes.empty()) {
+      quantOpTypes.emplace_back("MatMul");
+    } else {
+      quantOpTypes = nnpaQuantOpTypes;
+    }
+  }
+  // Set the proper instrumentation stage before we add any passes.
+  if (profileIR == onnx_mlir::ProfileIRs::ZHigh)
+    instrumentStage = onnx_mlir::InstrumentStages::ZHigh;
+
+  configureONNXToZHighLoweringPass(optReport == OptReport::NNPAUnsupportedOps,
+      isDynQuant, isActivationSym, isWeightSym, quantOpTypes);
 }
 
 void addONNXToZHighPasses(mlir::PassManager &pm) {
@@ -60,52 +115,20 @@ void addONNXToZHighPasses(mlir::PassManager &pm) {
     pm.addPass(onnx_mlir::createSimplifyShapeRelatedOpsPass());
   }
 
-  // Profiling ZHighIR.
-  unsigned instrumentActions = instrumentControlBits;
-  if (profileIR == onnx_mlir::ProfileIRs::ZHigh) {
-    instrumentStage = onnx_mlir::InstrumentStages::ZHigh;
-    instrumentOps = "onnx.*,zhigh.*";
-    // Enable the first three bits for InstrumentBeforOp, InstrumentAfterOp and
-    // InstrumentReportTime.
-    // Disable the last bit for InstrumentReportMemory because of its big
-    // overhead. Users can optionally enable the last bit by using
-    // --InstrumentReportMemory option.
-    instrumentActions |= (1 << 3) - 1;
-  }
-
-  // Insert an instrumentation before lowering onnx to zhigh to get onnx level
-  // profiling.
-  if (instrumentStage == onnx_mlir::InstrumentStages::Onnx)
-    pm.addNestedPass<func::FuncOp>(
-        onnx_mlir::createInstrumentPass(instrumentOps, instrumentActions));
-
+  // Lowering ONNX to ZHigh.
   pm.addPass(onnx_mlir::createONNXToZHighPass());
   pm.addNestedPass<func::FuncOp>(onnx_mlir::createShapeInferencePass());
+
   // There are more opportunities for const propagation once all zhigh ops were
   // generated.
   pm.addNestedPass<func::FuncOp>(onnx_mlir::createConstPropONNXToONNXPass());
   pm.addPass(mlir::createCanonicalizerPass());
+
   // Layout propagation at ZHighIR.
   pm.addNestedPass<func::FuncOp>(
       onnx_mlir::zhigh::createZHighLayoutPropagationPass());
   pm.addNestedPass<func::FuncOp>(onnx_mlir::createShapeInferencePass());
   pm.addPass(mlir::createCanonicalizerPass());
-
-  // Clip zhigh.Stick inputs if required. This is to avoid out-of-range of
-  // dlfloat. Do constant propagation after clipping to remove ONNX ops used for
-  // clipping such as ONNXMax if applicable.
-  if (nnpaClipToDLFloatRange) {
-    pm.addNestedPass<func::FuncOp>(
-        onnx_mlir::zhigh::createZHighClipToDLFloatPass());
-    pm.addNestedPass<func::FuncOp>(onnx_mlir::createConstPropONNXToONNXPass());
-  }
-
-  // After all optimizations, if there are still light-weight ops (e.g. add,
-  // sub, ...) that are of `stick -> light-weight op -> unstick`, it's better to
-  // use CPU instead of NNPA to avoid stick/unstick. CPU is efficient to handle
-  // these ops, e.g vectorize the computation.
-  if (nnpaEnableZHighToOnnx)
-    pm.addNestedPass<func::FuncOp>(onnx_mlir::createZHighToONNXPass());
 
   // One more call to ONNX shape inference/canonicalization/... to update shape
   // if possible.
@@ -120,17 +143,6 @@ void addONNXToZHighPasses(mlir::PassManager &pm) {
     pm.addNestedPass<func::FuncOp>(onnx_mlir::createShapeInferencePass());
   }
 
-  // Replace every DisposableElementsAttr with DenseElementsAttr.
-  // ZHighConstPropagation currently assumes that DenseElementsAttr is used.
-  pm.addPass(createScrubDisposablePass());
-
-  // Constant propagation at ZHighIR: constant stickify.
-  // Only support BE machines.
-  bool isBE = llvm::endianness::native == llvm::endianness::big;
-  if (isBE)
-    pm.addNestedPass<func::FuncOp>(
-        onnx_mlir::zhigh::createZHighConstPropagationPass());
-
   // Experimental feature: Decompose stick/unstick into two phases: layout
   // transform and data conversion. Do some optimizations after decomposing.
   // Then, recompose again layout and data conversion if they are not optimized.
@@ -142,16 +154,52 @@ void addONNXToZHighPasses(mlir::PassManager &pm) {
         onnx_mlir::zhigh::createZHighRecomposeToStickUnstickPass());
   }
 
+  // After all optimizations, if there are still light-weight ops (e.g. add,
+  // sub, ...) that are of `stick -> light-weight op -> unstick`, it's better to
+  // use CPU instead of NNPA to avoid stick/unstick. CPU is efficient to handle
+  // these ops, e.g vectorize the computation.
+  if (!nnpaDisableZHighToOnnx)
+    pm.addNestedPass<func::FuncOp>(onnx_mlir::createZHighToONNXPass());
+
+  // Constant propagation at ZHighIR: constant stickify.
+  // Only support BE machines.
+  bool isBE = llvm::endianness::native == llvm::endianness::big;
+  if (isBE)
+    pm.addPass(onnx_mlir::zhigh::createZHighConstPropagationPass());
+
   // Remove common sub-expressions.
   pm.addPass(mlir::createCSEPass());
 
   // Clean dead code.
   pm.addPass(mlir::createSymbolDCEPass());
 
-  // Insert an instrumentation after lowering onnx to zhigh to get profiling
-  // for onnx and zhigh ops.
-  // Keep this pass at the end of this function.
-  if (instrumentStage == onnx_mlir::InstrumentStages::ZHigh)
+  // Replace every DisposableElementsAttr with DenseElementsAttr.
+  pm.addPass(onnx_mlir::zhigh::createZHighScrubDisposablePass());
+
+  // Profiling ZHighIR.
+  unsigned instrumentActions = instrumentControlBits;
+  if (profileIR == onnx_mlir::ProfileIRs::ZHigh) {
+    assert(instrumentStage == onnx_mlir::InstrumentStages::ZHigh &&
+           "expected set to this");
+    instrumentOps = "onnx.*,zhigh.*";
+    // Enable the first three bits for InstrumentBeforOp, InstrumentAfterOp and
+    // InstrumentReportTime.
+    // Disable the last bit for InstrumentReportMemory because of its big
+    // overhead. Users can optionally enable the last bit by using
+    // --InstrumentReportMemory option.
+    instrumentActions |= (1 << 3) - 1;
+    // Also enable instrumentation of signatures.
+    instrumentSignatures = "onnx.*,zhigh.*";
+  }
+
+  // Insert an instrumentation after lowering onnx to zhigh to get profiling /
+  // signatures for onnx and zhigh ops. Keep this pass at the end of this
+  // function. Add createInstrument (timing) second so that it will guarantee
+  // not to include timing of the signature printing.
+  if (hasSignatureInstrumentation(onnx_mlir::InstrumentStages::ZHigh))
+    pm.addNestedPass<func::FuncOp>(onnx_mlir::createInstrumentONNXSignaturePass(
+        instrumentSignatures, instrumentOnnxNode));
+  if (hasInstrumentation(onnx_mlir::InstrumentStages::ZHigh))
     pm.addNestedPass<func::FuncOp>(
         onnx_mlir::createInstrumentPass(instrumentOps, instrumentActions));
 }
@@ -184,11 +232,14 @@ void addPassesNNPA(mlir::OwningOpRef<mlir::ModuleOp> &module,
 
   // Override pass configurations.
   configurePasses();
-  configurePassesNNPA();
 
   // LLVM_DEBUG(llvm::dbgs() << "Adding NNPA passes" << std::endl;);
   if (emissionTarget >= EmitONNXIR) {
-    addONNXToMLIRPasses(pm, /*target CPU*/ maccel.empty());
+    pm.addInstrumentation(
+        std::make_unique<onnx_mlir::zhigh::ZHighDisposableGarbageCollector>(
+            pm.getContext()));
+    addONNXToMLIRPasses(pm, /*target CPU*/ maccel.empty(),
+        /*donotScrubDisposableElementsAttr*/ true);
     pm.addPass(onnx_mlir::createDevicePlacementPass(nnpaLoadDevicePlacementFile,
         nnpaSaveDevicePlacementFile, nnpaPlacementHeuristic));
   }
@@ -214,8 +265,7 @@ void addPassesNNPA(mlir::OwningOpRef<mlir::ModuleOp> &module,
       else if (optStr == "-O3")
         optLevel = OptLevel::O3;
       // Lower ONNX to Krnl, ZHigh to ZLow.
-      addONNXToKrnlPasses(pm, optLevel, /*enableCSE*/ true,
-          instrumentONNXSignature, ONNXOpStats);
+      addONNXToKrnlPasses(pm, optLevel, /*enableCSE*/ true, ONNXOpStats);
 
       if (nnpaEmissionTarget >= EmitZLowIR)
         emissionTarget = EmitMLIR;
@@ -226,7 +276,7 @@ void addPassesNNPA(mlir::OwningOpRef<mlir::ModuleOp> &module,
         pm.addPass(zlow::createZLowRewritePass());
         // Late generation of code for stick/unstick, needed to be after a
         // ZLowRewrite pass.
-        if (nnpaEnableCompilerStickUnstick)
+        if (!nnpaDisableCompilerStickUnstick)
           pm.addPass(zlow::createZLowStickExpansionPass(enableParallel));
         pm.addPass(mlir::createCanonicalizerPass());
         // Normalize MemRefs.
@@ -236,18 +286,17 @@ void addPassesNNPA(mlir::OwningOpRef<mlir::ModuleOp> &module,
         addKrnlToAffinePasses(pm);
         // Optimizations at ZLow after normalizing MemRefs.
         pm.addPass(zlow::createZLowRewritePass());
-        // The createZLowStickExpansion pass may create parallel constructs,
-        // they need to be handled here.
-        if (nnpaEnableCompilerStickUnstick && enableParallel)
-          pm.addPass(mlir::createConvertSCFToOpenMPPass());
-
         pm.addPass(mlir::createCanonicalizerPass());
         // Constant folding for std.alloc.
         pm.addNestedPass<func::FuncOp>(onnx_mlir::createFoldStdAllocPass());
       }
-      // Insert an instrumentation after lowering zhigh to zlow to get profiling
-      // for zlow ops
-      if (instrumentStage == onnx_mlir::InstrumentStages::ZLow)
+      // Insert an instrumentation after lowering zhigh to zlow to get
+      // profiling/signatures for zlow ops
+      if (hasSignatureInstrumentation(onnx_mlir::InstrumentStages::ZLow))
+        // Omit printing signatures that late.
+        assert(false && "Printing signature information at ZLow instrument "
+                        "stage is currently unsupported");
+      if (hasInstrumentation(onnx_mlir::InstrumentStages::ZLow))
         pm.addNestedPass<func::FuncOp>(onnx_mlir::createInstrumentPass(
             instrumentOps, instrumentControlBits));
     }

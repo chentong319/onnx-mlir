@@ -124,8 +124,9 @@ func.func @test_fuse_element8(%arg0: tensor<?xf32>, %arg1: tensor<1xf32>) -> ten
 // CHECK-DAG:         [[LOAD_PARAM_0_MEM_:%.+]] = krnl.load [[PARAM_0_]]{{.}}[[VAR_1_]]{{.}} : memref<?xf32>
 // CHECK-DAG:         [[LOAD_PARAM_1_MEM_:%.+]] = krnl.load [[PARAM_1_]]{{.}}[[CST_0_]]{{.}} : memref<1xf32>
 // CHECK:             [[VAR_4_:%.+]] = math.powf [[LOAD_PARAM_0_MEM_]], [[LOAD_PARAM_1_MEM_]] : f32
-// CHECK:             [[VAR_5_:%.+]] = arith.fptosi [[VAR_4_]] : f32 to i8
-// CHECK:             krnl.store [[VAR_5_]], [[RES_]]{{.}}[[VAR_1_]]{{.}} : memref<?xi8>
+// CHECK:             [[VAR_5_:%.+]] = arith.fptosi [[VAR_4_]] : f32 to i32
+// CHECK:             [[VAR_6_:%.+]] = arith.trunci [[VAR_5_]] : i32 to i8
+// CHECK:             krnl.store [[VAR_6_]], [[RES_]]{{.}}[[VAR_1_]]{{.}} : memref<?xi8>
 // CHECK:           }
 // CHECK:           return [[RES_]] : memref<?xi8>
 // CHECK:         }
@@ -322,13 +323,14 @@ func.func @fuse_element_20(%533: tensor<?x?x768xf32>, %537 : tensor<?x?x1xf32>, 
 
 // -----
 
+
 func.func @test_fuse_element21(%arg0: tensor<?xf32>, %arg1: tensor<1xf32>, %arg2 : tensor<1xi8>) -> tensor<?xi8> {
-  %0 = "onnx.Pow"(%arg0, %arg1) : (tensor<?xf32>, tensor<1xf32>) -> tensor<?xf32> 
+  %0 = "onnx.Pow"(%arg0, %arg1) : (tensor<?xf32>, tensor<1xf32>) -> tensor<?xf32>
   %1 = "onnx.Cast"(%0) {to = i8} : (tensor<?xf32>) -> tensor<?xi8>
   %2 = "onnx.Add"(%1, %arg2) : (tensor<?xi8>, tensor<1xi8>) -> tensor<?xi8>
   return %2 : tensor<?xi8>
-}
 
+// mlir2FileCheck.py
 // CHECK-DAG:   [[MAP_0_:#.+]] = affine_map<(d0) -> (d0)>
 // CHECK-LABEL:  func.func @test_fuse_element21
 // CHECK-SAME:   ([[PARAM_0_:%.+]]: memref<?xf32>, [[PARAM_1_:%.+]]: memref<1xf32>, [[PARAM_2_:%.+]]: memref<1xi8>) -> memref<?xi8> {
@@ -341,12 +343,41 @@ func.func @test_fuse_element21(%arg0: tensor<?xf32>, %arg1: tensor<1xf32>, %arg2
 // CHECK-DAG:         [[LOAD_PARAM_0_MEM_:%.+]] = krnl.load [[PARAM_0_]]{{.}}[[VAR_1_]]{{.}} : memref<?xf32>
 // CHECK-DAG:         [[LOAD_PARAM_1_MEM_:%.+]] = krnl.load [[PARAM_1_]]{{.}}[[CST_0_]]{{.}} : memref<1xf32>
 // CHECK:             [[VAR_4_:%.+]] = math.powf [[LOAD_PARAM_0_MEM_]], [[LOAD_PARAM_1_MEM_]] : f32
-// CHECK-DAG:         [[VAR_5_:%.+]] = arith.fptosi [[VAR_4_]] : f32 to i8
+// CHECK:             [[VAR_5_:%.+]] = arith.fptosi [[VAR_4_]] : f32 to i32
+// CHECK-DAG:         [[VAR_6_:%.+]] = arith.trunci [[VAR_5_]] : i32 to i8
 // CHECK-DAG:         [[LOAD_PARAM_2_MEM_:%.+]] = krnl.load [[PARAM_2_]]{{.}}[[CST_0_]]{{.}} : memref<1xi8>
-// CHECK:             [[VAR_7_:%.+]] = arith.addi [[VAR_5_]], [[LOAD_PARAM_2_MEM_]] : i8
-// CHECK:             krnl.store [[VAR_7_]], [[RES_]]{{.}}[[VAR_1_]]{{.}} : memref<?xi8>
+// CHECK:             [[VAR_8_:%.+]] = arith.addi [[VAR_6_]], [[LOAD_PARAM_2_MEM_]] : i8
+// CHECK:             krnl.store [[VAR_8_]], [[RES_]]{{.}}[[VAR_1_]]{{.}} : memref<?xi8>
 // CHECK:           }
 // CHECK:           return [[RES_]] : memref<?xi8>
 // CHECK:         }
+}
 
+// -----
 
+// COM: Check that onnx.Constant is moved to a correct position, which makes the IR valid.
+func.func @test_move_constant_when_fusing(%arg0: tensor<2x4xui8>) -> tensor<2x4xi8>{
+  %2 = "onnx.Cast"(%arg0) {saturate = 1 : si64, to = i16} : (tensor<2x4xui8>) -> tensor<2x4xi16>
+  %0 = onnx.Constant dense<128> : tensor<i16>
+  %3 = "onnx.Sub"(%2, %0) : (tensor<2x4xi16>, tensor<i16>) -> tensor<2x4xi16>
+  %4 = "onnx.Cast"(%3) {saturate = 1 : si64, to = i8} : (tensor<2x4xi16>) -> tensor<2x4xi8>
+  return %4: tensor<2x4xi8>
+
+// CHECK-LABEL:  func.func @test_move_constant_when_fusing
+// CHECK-SAME:   ([[PARAM_0_:%.+]]: memref<2x4xui8>) -> memref<2x4xi8> {
+// CHECK-DAG:       [[VAR_0_:%.+]] = "krnl.global"() {name = "constant_{{[0-9]+}}", shape = [], value = dense<128> : tensor<i16>} : () -> memref<i16>
+// CHECK-DAG:       [[RES_:%.+]] = memref.alloc() {{.*}}: memref<2x4xi8>
+// CHECK-DAG:       [[LOOP_0_:%.+]]:2 = krnl.define_loops 2
+// CHECK:           krnl.iterate([[LOOP_0_]]#0, [[LOOP_0_]]#1) with ([[LOOP_0_]]#0 -> [[I_0_:%.+]] = 0 to 2, [[LOOP_0_]]#1 -> [[I_1_:%.+]] = 0 to 4){
+// CHECK:             [[VAR_2_:%.+]]:2 = krnl.get_induction_var_value([[LOOP_0_]]#0, [[LOOP_0_]]#1) : (!krnl.loop, !krnl.loop) -> (index, index)
+// CHECK:             [[LOAD_PARAM_0_MEM_:%.+]] = krnl.load [[PARAM_0_]]{{.}}[[VAR_2_]]#0, [[VAR_2_]]#1] : memref<2x4xui8>
+// CHECK:             [[VAR_4_:%.+]] = builtin.unrealized_conversion_cast [[LOAD_PARAM_0_MEM_]] : ui8 to i8
+// CHECK-DAG:         [[VAR_5_:%.+]] = arith.extui [[VAR_4_]] : i8 to i16
+// CHECK-DAG:         [[LOAD_VAR_0_MEM_:%.+]] = krnl.load [[VAR_0_]][] : memref<i16>
+// CHECK:             [[VAR_7_:%.+]] = arith.subi [[VAR_5_]], [[LOAD_VAR_0_MEM_]] : i16
+// CHECK:             [[VAR_8_:%.+]] = arith.trunci [[VAR_7_]] : i16 to i8
+// CHECK:             krnl.store [[VAR_8_]], [[RES_]]{{.}}[[VAR_2_]]#0, [[VAR_2_]]#1] : memref<2x4xi8>
+// CHECK:           }
+// CHECK:           return [[RES_]] : memref<2x4xi8>
+// CHECK:         }
+}

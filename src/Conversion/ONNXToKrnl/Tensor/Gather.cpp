@@ -12,6 +12,9 @@
 //
 //===----------------------------------------------------------------------===//
 
+#include "mlir/Dialect/SCF/IR/SCF.h"
+
+#include "src/Compiler/CompilerOptions.hpp"
 #include "src/Conversion/ONNXToKrnl/ONNXToKrnlCommon.hpp"
 #include "src/Dialect/ONNX/ONNXOps/ShapeHelper.hpp"
 
@@ -37,7 +40,8 @@ struct ONNXGatherOpLowering : public OpConversionPattern<ONNXGatherOp> {
     Location loc = ONNXLoc<ONNXGatherOp>(op);
     ValueRange operands = adaptor.getOperands();
 
-    MultiDialectBuilder<KrnlBuilder, IndexExprBuilderForKrnl, MemRefBuilder>
+    MultiDialectBuilder<KrnlBuilder, IndexExprBuilderForKrnl, MemRefBuilder,
+        MathBuilder>
         create(rewriter, loc);
 
     // Get shape.
@@ -46,9 +50,9 @@ struct ONNXGatherOpLowering : public OpConversionPattern<ONNXGatherOp> {
 
     // Convert the output type to MemRefType.
     Type convertedType = typeConverter->convertType(*op->result_type_begin());
-    assert(convertedType && convertedType.isa<MemRefType>() &&
+    assert(convertedType && mlir::isa<MemRefType>(convertedType) &&
            "Failed to convert type to MemRefType");
-    MemRefType outputMemRefType = convertedType.cast<MemRefType>();
+    MemRefType outputMemRefType = mlir::cast<MemRefType>(convertedType);
 
     // Insert an allocation and deallocation for the output of this operation.
     Value alloc =
@@ -58,14 +62,17 @@ struct ONNXGatherOpLowering : public OpConversionPattern<ONNXGatherOp> {
     Value data = adaptor.getData();
     Value indices = adaptor.getIndices();
     int64_t axisLit = adaptor.getAxis();
-    int64_t dataRank = data.getType().cast<MemRefType>().getRank();
-    int64_t indicesRank = indices.getType().cast<MemRefType>().getRank();
+    int64_t dataRank = mlir::cast<MemRefType>(data.getType()).getRank();
+    int64_t indicesRank = mlir::cast<MemRefType>(indices.getType()).getRank();
 
     // Determine whether indices may be negative.
     bool indicesMayBeNegative = !indicesAreNonNegativeConstants(indices);
 
     // Negative value means counting dimensions from the back.
     axisLit = axisLit < 0 ? axisLit + dataRank : axisLit;
+
+    // Check the value of indices and change it to zero if out-of-bound
+    genSafeCodeForGatherAlike(rewriter, loc, op, data, indices, axisLit);
 
     int64_t outputRank = shapeHelper.getOutputDims().size();
     int iIndexStart = 0;
@@ -102,7 +109,7 @@ struct ONNXGatherOpLowering : public OpConversionPattern<ONNXGatherOp> {
       }
     }
     create.krnl.iterateIE(loopDef, loopDef, lbs, shapeHelper.getOutputDims(),
-        [&](KrnlBuilder &createKrnl, ValueRange loopInd) {
+        [&](const KrnlBuilder &createKrnl, ValueRange loopInd) {
           // Insert code inside the loop.
           IndexExprScope innerLoopScope(createKrnl);
           SymbolIndexExpr axisDim(dataDims[axisLit]);
@@ -118,9 +125,15 @@ struct ONNXGatherOpLowering : public OpConversionPattern<ONNXGatherOp> {
           Value indexVal = createKrnl.loadIE(indices, indicesAccessFct);
           // Loaded value is an index that is not affine
           IndexExpr index = NonAffineIndexExpr(indexVal);
+
           // When index may be negative, add axis Dim to it.
           if (indicesMayBeNegative)
             index = index.selectOrSelf(index < zeroIE, index + axisDim);
+
+          if (enableSafeCodeGen) {
+            index = index.selectOrSelf(index < 0, zeroIE);
+            index = index.selectOrSelf(index >= axisDim, axisDim - 1);
+          }
 
           // Compute access function of data: data[ii + (indices[jj],) + kk]
           SmallVector<IndexExpr, 4> dataAccessFct;

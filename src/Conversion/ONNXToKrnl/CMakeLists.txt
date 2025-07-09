@@ -11,6 +11,7 @@ add_onnx_mlir_library(OMONNXToKrnl
   ControlFlow/If.cpp
   ControlFlow/Loop.cpp
   ControlFlow/Scan.cpp
+  ControlFlow/Yield.cpp
   ConvertONNXToKrnl.cpp
   ML/CategoryMapper.cpp
   Math/CumSum.cpp
@@ -18,11 +19,16 @@ add_onnx_mlir_library(OMONNXToKrnl
   Math/Elementwise.cpp
   Math/Gemm.cpp
   Math/Hardmax.cpp
+  Math/LpNormalization.cpp
+  Math/Window.cpp
   Math/LRN.cpp
   Math/MatMul.cpp
   Math/MatMulInteger.cpp
+  Math/MeanVarianceNormalization.cpp
+  Math/QLinearMatMul.cpp
   Math/RandomNormal.cpp
   Math/RandomNormalLike.cpp
+  Math/RandomUniform.cpp
   Math/Reduction.cpp
   Math/Softmax.cpp
   Math/TopK.cpp

@@ -31,6 +31,9 @@ LogicalResult ONNXGenericPoolOpShapeHelper<OP_TYPE>::customComputeShape(
     std::optional<ArrayAttr> strideOpt, std::optional<ArrayAttr> dilationOpt,
     bool hasFilter, bool ceilMode) {
   // Basic information.
+  if(!hasShapeAndRank(xValue)) {
+    return failure();
+  }
   int64_t rank = createIE->getShapedTypeRank(xValue);
   int64_t spatialOffset = 2;
   int64_t spatialRank = rank - spatialOffset;
@@ -45,8 +48,7 @@ LogicalResult ONNXGenericPoolOpShapeHelper<OP_TYPE>::customComputeShape(
         dilationOpt.has_value() ? ArrayAttrIntVal(dilationOpt, i) : 1);
     // Kernel shape from attribute, default from Weight's spatial dims.
     if (kernelShapeOpt.has_value()) {
-      kernelShape.emplace_back(
-          LiteralIndexExpr(ArrayAttrIntVal(kernelShapeOpt, i)));
+      kernelShape.emplace_back(LitIE(ArrayAttrIntVal(kernelShapeOpt, i)));
     } else {
       assert(hasFilter && "no kernel shape and no filter: unkown kernel shape");
       int ii = i + spatialOffset;
@@ -56,7 +58,7 @@ LogicalResult ONNXGenericPoolOpShapeHelper<OP_TYPE>::customComputeShape(
   // Pads, at this stage a given compile-time literal or default 0.
   for (int i = 0; i < 2 * spatialRank; ++i) {
     int64_t p = padOpt.has_value() ? ArrayAttrIntVal(padOpt, i) : 0;
-    pads.emplace_back(LiteralIndexExpr(p));
+    pads.emplace_back(LitIE(p));
   }
 
   // Handle output size: start by inserting batch size and output channels.
@@ -181,7 +183,7 @@ static LogicalResult verifyKernelShape(T *op, Value filterOperand,
   // 1) Get shape of filter. Shape is not guaranteed to be compile time
   // constant.
   ArrayRef<int64_t> filterShape =
-      filterOperand ? filterOperand.getType().cast<ShapedType>().getShape()
+      filterOperand ? mlir::cast<ShapedType>(filterOperand.getType()).getShape()
                     : ArrayRef<int64_t>();
   // 2) Get kernel_shape attribute
   if (!kernelShapeOpt.has_value()) {

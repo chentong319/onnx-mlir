@@ -4,7 +4,7 @@
 
 //===---------- ZLowToLLVM.cpp - Lowering from ZLow to LLVM ---------------===//
 //
-// Copyright 2019-2022 The IBM Research Authors.
+// Copyright 2019-2024 The IBM Research Authors.
 //
 // =============================================================================
 //
@@ -24,6 +24,8 @@
 #include "src/Accelerators/NNPA/Conversion/ZLowToLLVM/ZLowToLLVMCommon.hpp"
 #include "src/Accelerators/NNPA/Dialect/ZLow/ZLowOps.hpp"
 #include "src/Accelerators/NNPA/Support/LayoutHelper.hpp"
+#include "src/Accelerators/NNPA/Support/NNPALimit.hpp"
+#include "src/Compiler/CompilerOptions.hpp"
 #include "src/Conversion/KrnlToLLVM/KrnlToLLVMHelper.hpp"
 #include "src/Dialect/Mlir/DialectBuilder.hpp"
 #include "zdnn.h"
@@ -37,7 +39,7 @@ namespace zlow {
 static bool FUNC_CALL_FOR_DLF16_CONVERSION = false;
 static bool SIMD_FOR_DLF16_CONVERSION = true;
 
-zdnn_data_layouts UNDEFINED_ZDNN_LAYOUT = (zdnn_data_layouts)255;
+zdnn_data_layouts UNDEFINED_ZDNN_LAYOUT = static_cast<zdnn_data_layouts>(255);
 
 // Obtain a zDNN API for an elementwise ZLow operation.
 template <>
@@ -73,8 +75,16 @@ API APIFor<ZLowExpOp>() {
   return API::ZDNN_EXP;
 }
 template <>
+API APIFor<ZLowInvSqrtOp>() {
+  return API::ZDNN_INVSQRT;
+}
+template <>
 API APIFor<ZLowReluOp>() {
   return API::ZDNN_RELU;
+}
+template <>
+API APIFor<ZLowGeluOp>() {
+  return API::ZDNN_GELU;
 }
 template <>
 API APIFor<ZLowTanhOp>() {
@@ -83,6 +93,11 @@ API APIFor<ZLowTanhOp>() {
 template <>
 API APIFor<ZLowSigmoidOp>() {
   return API::ZDNN_SIGMOID;
+}
+
+template <>
+API APIFor<ZLowSqrtOp>() {
+  return API::ZDNN_SQRT;
 }
 
 class ZLowStickLowering : public mlir::ConvertToLLVMPattern {
@@ -98,12 +113,15 @@ public:
       ConversionPatternRewriter &rewriter) const override {
     ModuleOp module = op->getParentOfType<ModuleOp>();
     Location loc = op->getLoc();
-    ZLowStickOp stickOp = cast<ZLowStickOp>(op);
+    ZLowStickOp stickOp = mlir::cast<ZLowStickOp>(op);
+    std::optional<int64_t> noSaturationOpt = stickOp.getNoSaturation();
+    bool saturation =
+        (!noSaturationOpt.has_value()) || (noSaturationOpt.value() == 0);
 
     ZLowStickOpAdaptor operandAdaptor(operands);
     // Do not get element type from adaptor since the type can be opaque.
     Type llvmElementTy = typeConverter->convertType(
-        stickOp.getX().getType().cast<MemRefType>().getElementType());
+        mlir::cast<MemRefType>(stickOp.getX().getType()).getElementType());
 
     ZTensorHelper zTensorHelper =
         ZTensorHelper(rewriter, loc, module, apiRegistry);
@@ -130,8 +148,96 @@ public:
 
     // Ready to stickify.
     Value unstickI8Ptr = zTensorHelper.getAlignedI8Ptr(operandAdaptor.getX());
-    callApi(rewriter, loc, module, apiRegistry, API::ZDNN_TRANSFORM_ZTENSOR,
-        {toOpaquePtr(rewriter, loc, module, zTensor.val), unstickI8Ptr});
+    if (saturation)
+      callApi(rewriter, loc, module, apiRegistry,
+          API::ZDNN_TRANSFORM_ZTENSOR_WITH_SATURATION,
+          {toOpaquePtr(rewriter, loc, module, zTensor.val), unstickI8Ptr});
+    else
+      callApi(rewriter, loc, module, apiRegistry, API::ZDNN_TRANSFORM_ZTENSOR,
+          {toOpaquePtr(rewriter, loc, module, zTensor.val), unstickI8Ptr});
+
+    rewriter.eraseOp(op);
+    return success();
+  }
+
+private:
+  ApiRegistry apiRegistry;
+};
+
+class ZLowQuantizedStickLowering : public mlir::ConvertToLLVMPattern {
+public:
+  explicit ZLowQuantizedStickLowering(MLIRContext *context,
+      LLVMTypeConverter &lowering_, ApiRegistry apiRegistry)
+      : ConvertToLLVMPattern(
+            ZLowQuantizedStickOp::getOperationName(), context, lowering_) {
+    this->apiRegistry = apiRegistry;
+  }
+
+  LogicalResult matchAndRewrite(Operation *op, ArrayRef<Value> operands,
+      ConversionPatternRewriter &rewriter) const override {
+    Location loc = op->getLoc();
+    ModuleOp module = op->getParentOfType<ModuleOp>();
+    MultiDialectBuilder<LLVMBuilder> create(rewriter, loc);
+
+    ZLowQuantizedStickOp stickOp = cast<ZLowQuantizedStickOp>(op);
+    ZLowQuantizedStickOpAdaptor operandAdaptor(operands);
+    Value recScale = operandAdaptor.getRecScale();
+    Value offset = operandAdaptor.getOffset();
+    StringRef transformTypeStr = stickOp.getQType();
+
+    // Do not get element type from adaptor since the type can be opaque.
+    Type llvmElementTy = typeConverter->convertType(
+        mlir::cast<MemRefType>(stickOp.getX().getType()).getElementType());
+    Type llvmI64Ty = rewriter.getI64Type();
+    Type llvmF32Ty = rewriter.getF32Type();
+
+    ZTensorHelper zTensorHelper =
+        ZTensorHelper(rewriter, loc, module, apiRegistry);
+
+    // Get the dimensions of the original shape (the shape before stickifying)
+    // used for creating a zTensor. For 'zLow.quantizedStick', the original
+    // shape is obtained from the first argument.
+    SmallVector<Value, 3> dims;
+    getDimsFromMemRef(rewriter, loc, module, operandAdaptor.getX(), dims);
+
+    // Get zDNN data type.
+    zdnn_data_types zDNNDataType = llvmTypeToZDNNType(llvmElementTy);
+
+    // Get zDNN data layout.
+    zdnn_data_layouts zDNNDataLayout =
+        convertLayoutAttrToZDNNDataLayout(dims.size(), stickOp.getLayoutAttr());
+
+    // Get zDNN transform type.
+    zdnn_quantized_transform_types transformType =
+        getQuantizedTransformType(transformTypeStr);
+
+    // Create a zTensor.
+    Value stickI8Ptr = zTensorHelper.getAlignedI8Ptr(operandAdaptor.getOut());
+    Value recScaleF32 = loadFromMemRef(create.llvm, llvmF32Ty, recScale, 0);
+    Value offsetF32 = loadFromMemRef(create.llvm, llvmF32Ty, offset, 0);
+    ZTensor zTensor =
+        zTensorHelper.getQuantizedZTensor(stickI8Ptr, /*dataType=*/zDNNDataType,
+            /*layout=*/zDNNDataLayout, /*transformType=*/transformType,
+            /*originalDims=*/dims, /*recScale=*/recScaleF32,
+            /*offset=*/offsetF32,
+            /*isTransformed=*/false);
+
+    // Always saturate.
+    Value saturationVal =
+        create.llvm.constant(llvmI64Ty, static_cast<int64_t>(1));
+
+    // Min, Max clip values.
+    Value clipMIN =
+        create.llvm.constant(llvmI64Ty, static_cast<int64_t>(INT8_MIN));
+    Value clipMAX =
+        create.llvm.constant(llvmI64Ty, static_cast<int64_t>(INT8_MAX));
+
+    // Ready to stickify.
+    Value unstickI8Ptr = zTensorHelper.getAlignedI8Ptr(operandAdaptor.getX());
+    callApi(rewriter, loc, module, apiRegistry,
+        API::ZDNN_TRANSFORM_QUANTIZED_ZTENSOR,
+        {toOpaquePtr(rewriter, loc, module, zTensor.val), saturationVal,
+            clipMIN, clipMAX, unstickI8Ptr});
 
     rewriter.eraseOp(op);
     return success();
@@ -154,13 +260,12 @@ public:
       ConversionPatternRewriter &rewriter) const override {
     ModuleOp module = op->getParentOfType<ModuleOp>();
     Location loc = op->getLoc();
-    ZLowStickForLSTMOp stickForLSTMOp = cast<ZLowStickForLSTMOp>(op);
+    ZLowStickForLSTMOp stickForLSTMOp = mlir::cast<ZLowStickForLSTMOp>(op);
 
     ZLowStickForLSTMOpAdaptor operandAdaptor(operands);
-    Type llvmElementTy = typeConverter->convertType(stickForLSTMOp.getFGate()
-                                                        .getType()
-                                                        .cast<MemRefType>()
-                                                        .getElementType());
+    Type llvmElementTy = typeConverter->convertType(
+        mlir::cast<MemRefType>(stickForLSTMOp.getFGate().getType())
+            .getElementType());
 
     ZTensorHelper zTensorHelper =
         ZTensorHelper(rewriter, loc, module, apiRegistry);
@@ -241,11 +346,12 @@ public:
       ConversionPatternRewriter &rewriter) const override {
     ModuleOp module = op->getParentOfType<ModuleOp>();
     Location loc = op->getLoc();
-    ZLowStickForGRUOp stickForGRUOp = cast<ZLowStickForGRUOp>(op);
+    ZLowStickForGRUOp stickForGRUOp = mlir::cast<ZLowStickForGRUOp>(op);
 
     ZLowStickForGRUOpAdaptor operandAdaptor(operands);
     Type llvmElementTy = typeConverter->convertType(
-        stickForGRUOp.getZGate().getType().cast<MemRefType>().getElementType());
+        mlir::cast<MemRefType>(stickForGRUOp.getZGate().getType())
+            .getElementType());
 
     ZTensorHelper zTensorHelper =
         ZTensorHelper(rewriter, loc, module, apiRegistry);
@@ -324,19 +430,19 @@ public:
       ConversionPatternRewriter &rewriter) const override {
     ModuleOp module = op->getParentOfType<ModuleOp>();
     Location loc = op->getLoc();
-    ZLowLSTMOp lstmOp = cast<ZLowLSTMOp>(op);
+    ZLowLSTMOp lstmOp = mlir::cast<ZLowLSTMOp>(op);
     MultiDialectBuilder<LLVMBuilder> create(rewriter, loc);
 
     ZLowLSTMOpAdaptor operandAdaptor(operands);
     Type llvmElementTy = typeConverter->convertType(
-        lstmOp.getInput().getType().cast<MemRefType>().getElementType());
+        mlir::cast<MemRefType>(lstmOp.getInput().getType()).getElementType());
 
     ZTensorHelper zTensorHelper =
         ZTensorHelper(rewriter, loc, module, apiRegistry);
 
     // Some frequently used types and constants.
     Type llvmI64Ty = rewriter.getI64Type();
-    Value oneI64 = create.llvm.constant(llvmI64Ty, (int64_t)1);
+    Value oneI64 = create.llvm.constant(llvmI64Ty, static_cast<int64_t>(1));
 
     // Get the dimensions of the original shape (the shape before stickifying)
     // used for creating zTensors.
@@ -429,11 +535,11 @@ public:
     Value direction;
     StringRef directionStr = lstmOp.getDirection();
     if (directionStr.equals_insensitive("forward")) {
-      direction = create.llvm.constant(llvmI64Ty, (int64_t)FWD);
+      direction = create.llvm.constant(llvmI64Ty, static_cast<int64_t>(FWD));
     } else if (directionStr.equals_insensitive("reverse")) {
-      direction = create.llvm.constant(llvmI64Ty, (int64_t)BWD);
+      direction = create.llvm.constant(llvmI64Ty, static_cast<int64_t>(BWD));
     } else if (directionStr.equals_insensitive("bidirectional")) {
-      direction = create.llvm.constant(llvmI64Ty, (int64_t)BIDIR);
+      direction = create.llvm.constant(llvmI64Ty, static_cast<int64_t>(BIDIR));
     } else
       llvm_unreachable("Unsupported direction");
 
@@ -520,19 +626,19 @@ public:
       ConversionPatternRewriter &rewriter) const override {
     ModuleOp module = op->getParentOfType<ModuleOp>();
     Location loc = op->getLoc();
-    ZLowGRUOp gruOp = cast<ZLowGRUOp>(op);
+    ZLowGRUOp gruOp = mlir::cast<ZLowGRUOp>(op);
     MultiDialectBuilder<LLVMBuilder> create(rewriter, loc);
 
     ZLowGRUOpAdaptor operandAdaptor(operands);
     Type llvmElementTy = typeConverter->convertType(
-        gruOp.getInput().getType().cast<MemRefType>().getElementType());
+        mlir::cast<MemRefType>(gruOp.getInput().getType()).getElementType());
 
     ZTensorHelper zTensorHelper =
         ZTensorHelper(rewriter, loc, module, apiRegistry);
 
     // Some frequently used types and constants.
     Type llvmI64Ty = rewriter.getI64Type();
-    Value oneI64 = create.llvm.constant(llvmI64Ty, (int64_t)1);
+    Value oneI64 = create.llvm.constant(llvmI64Ty, static_cast<int64_t>(1));
 
     // Get the dimensions of the original shape (the shape before stickifying)
     // used for creating zTensors.
@@ -604,11 +710,11 @@ public:
     Value direction;
     StringRef directionStr = gruOp.getDirection();
     if (directionStr.equals_insensitive("forward")) {
-      direction = create.llvm.constant(llvmI64Ty, (int64_t)FWD);
+      direction = create.llvm.constant(llvmI64Ty, static_cast<int64_t>(FWD));
     } else if (directionStr.equals_insensitive("reverse")) {
-      direction = create.llvm.constant(llvmI64Ty, (int64_t)BWD);
+      direction = create.llvm.constant(llvmI64Ty, static_cast<int64_t>(BWD));
     } else if (directionStr.equals_insensitive("bidirectional")) {
-      direction = create.llvm.constant(llvmI64Ty, (int64_t)BIDIR);
+      direction = create.llvm.constant(llvmI64Ty, static_cast<int64_t>(BIDIR));
     } else
       llvm_unreachable("Unsupported direction");
 
@@ -675,11 +781,11 @@ public:
       ConversionPatternRewriter &rewriter) const override {
     ModuleOp module = op->getParentOfType<ModuleOp>();
     Location loc = op->getLoc();
-    ZLowUnstickOp unstickOp = cast<ZLowUnstickOp>(op);
+    ZLowUnstickOp unstickOp = mlir::cast<ZLowUnstickOp>(op);
 
     ZLowUnstickOpAdaptor operandAdaptor(operands);
     Type llvmElementTy = typeConverter->convertType(
-        unstickOp.getOut().getType().cast<MemRefType>().getElementType());
+        mlir::cast<MemRefType>(unstickOp.getOut().getType()).getElementType());
 
     ZTensorHelper zTensorHelper =
         ZTensorHelper(rewriter, loc, module, apiRegistry);
@@ -732,7 +838,7 @@ public:
     ModuleOp module = op->getParentOfType<ModuleOp>();
     Location loc = op->getLoc();
     MLIRContext *context = rewriter.getContext();
-    UnaryElementwiseOp unaryOp = cast<UnaryElementwiseOp>(op);
+    UnaryElementwiseOp unaryOp = mlir::cast<UnaryElementwiseOp>(op);
     typename UnaryElementwiseOp::Adaptor operandAdaptor(operands);
     MultiDialectBuilder<LLVMBuilder> create(rewriter, loc);
 
@@ -740,7 +846,7 @@ public:
     Value shape = operandAdaptor.getShape();
     Value output = operandAdaptor.getOut();
     Type llvmElementTy = typeConverter->convertType(
-        op->getOperand(0).getType().cast<MemRefType>().getElementType());
+        mlir::cast<MemRefType>(op->getOperand(0).getType()).getElementType());
 
     ZTensorHelper zTensorHelper =
         ZTensorHelper(rewriter, loc, module, apiRegistry);
@@ -782,6 +888,14 @@ public:
       callApi(rewriter, loc, module, apiRegistry, APIFor<UnaryElementwiseOp>(),
           {toOpaquePtr(rewriter, loc, module, inputZTensor.val), nullpointer,
               toOpaquePtr(rewriter, loc, module, outputZTensor.val)});
+    } else if (APIFor<UnaryElementwiseOp>() == API::ZDNN_INVSQRT) {
+      MultiDialectBuilder<LLVMBuilder> create(rewriter, loc);
+      // Create a float for the epsilon value.
+      Value epsilon = create.llvm.constant(rewriter.getF32Type(), nnpaEpsilon);
+      // Pass to ZDNN.
+      callApi(rewriter, loc, module, apiRegistry, APIFor<UnaryElementwiseOp>(),
+          {toOpaquePtr(rewriter, loc, module, inputZTensor.val), epsilon,
+              toOpaquePtr(rewriter, loc, module, outputZTensor.val)});
     } else {
       callApi(rewriter, loc, module, apiRegistry, APIFor<UnaryElementwiseOp>(),
           {toOpaquePtr(rewriter, loc, module, inputZTensor.val),
@@ -810,7 +924,7 @@ public:
       ConversionPatternRewriter &rewriter) const override {
     ModuleOp module = op->getParentOfType<ModuleOp>();
     Location loc = op->getLoc();
-    BinaryElementwiseOp binaryOp = cast<BinaryElementwiseOp>(op);
+    BinaryElementwiseOp binaryOp = mlir::cast<BinaryElementwiseOp>(op);
     typename BinaryElementwiseOp::Adaptor operandAdaptor(operands);
 
     Value input1 = operandAdaptor.getX();
@@ -818,7 +932,7 @@ public:
     Value shape = operandAdaptor.getShape();
     Value output = operandAdaptor.getOut();
     Type llvmElementTy = typeConverter->convertType(
-        op->getOperand(0).getType().cast<MemRefType>().getElementType());
+        mlir::cast<MemRefType>(op->getOperand(0).getType()).getElementType());
 
     ZTensorHelper zTensorHelper =
         ZTensorHelper(rewriter, loc, module, apiRegistry);
@@ -888,12 +1002,12 @@ public:
       ConversionPatternRewriter &rewriter) const override {
     ModuleOp module = op->getParentOfType<ModuleOp>();
     Location loc = op->getLoc();
-    ZLowSoftmaxOp softmaxOp = cast<ZLowSoftmaxOp>(op);
+    ZLowSoftmaxOp softmaxOp = mlir::cast<ZLowSoftmaxOp>(op);
     MultiDialectBuilder<LLVMBuilder> create(rewriter, loc);
 
     ZLowSoftmaxOpAdaptor operandAdaptor(operands);
     Type llvmElementTy = typeConverter->convertType(
-        softmaxOp.getX().getType().cast<MemRefType>().getElementType());
+        mlir::cast<MemRefType>(softmaxOp.getX().getType()).getElementType());
 
     ZTensorHelper zTensorHelper =
         ZTensorHelper(rewriter, loc, module, apiRegistry);
@@ -925,8 +1039,8 @@ public:
       actType = NNPA_SOFTMAX_LOG;
     else
       llvm_unreachable("Unsupported activation function");
-    Value actFunc =
-        create.llvm.constant(rewriter.getI64Type(), (int64_t)actType);
+    Value actFunc = create.llvm.constant(
+        rewriter.getI64Type(), static_cast<int64_t>(actType));
 
     // Create the output zTensor.
     stickI8Ptr = zTensorHelper.getAlignedI8Ptr(operandAdaptor.getOut());
@@ -958,6 +1072,188 @@ private:
   ApiRegistry apiRegistry;
 };
 
+class ZLowLeakyReluLowering : public ConvertToLLVMPattern {
+public:
+  explicit ZLowLeakyReluLowering(MLIRContext *context,
+      LLVMTypeConverter &lowering_, ApiRegistry apiRegistry)
+      : ConvertToLLVMPattern(
+            ZLowLeakyReluOp::getOperationName(), context, lowering_) {
+    this->apiRegistry = apiRegistry;
+  }
+
+  LogicalResult matchAndRewrite(Operation *op, ArrayRef<Value> operands,
+      ConversionPatternRewriter &rewriter) const override {
+    ModuleOp module = op->getParentOfType<ModuleOp>();
+    Location loc = op->getLoc();
+    ZLowLeakyReluOp leakyreluOp = cast<ZLowLeakyReluOp>(op);
+    MultiDialectBuilder<LLVMBuilder> create(rewriter, loc);
+    MLIRContext *context = rewriter.getContext();
+    typename ZLowLeakyReluOp::Adaptor operandAdaptor(operands);
+
+    Value input = operandAdaptor.getX();
+    Value shape = operandAdaptor.getShape();
+    Value output = operandAdaptor.getOut();
+    Type llvmElementTy = typeConverter->convertType(
+        mlir::cast<MemRefType>(op->getOperand(0).getType()).getElementType());
+
+    ZTensorHelper zTensorHelper =
+        ZTensorHelper(rewriter, loc, module, apiRegistry);
+
+    // Get zDNN data type.
+    zdnn_data_types zDNNDataType = llvmTypeToZDNNType(llvmElementTy);
+
+    // Get zDNN data layout.
+    zdnn_data_layouts zDNNDataLayout =
+        convertLayoutAttrToZDNNDataLayout(0, leakyreluOp.getLayoutAttr());
+
+    // Get the dimensions of the original shape (the shape before stickifying)
+    // used for creating a zTensor.
+    std::vector<Value> dims =
+        getDimsFromShapeMemRef(rewriter, loc, module, shape,
+            /*layout=*/zDNNDataLayout);
+
+    // Create an input zTensor.
+    Value stickI8Ptr = zTensorHelper.getAlignedI8Ptr(input);
+    ZTensor inputZTensor =
+        zTensorHelper.getZTensor(stickI8Ptr, /*dataType=*/zDNNDataType,
+            /*layout=*/zDNNDataLayout, /*originalDims=*/dims,
+            /*isTransformed=*/true);
+
+    // Create an output zTensor.
+    stickI8Ptr = zTensorHelper.getAlignedI8Ptr(output);
+    ZTensor outputZTensor = zTensorHelper.getZTensor(
+        /*preTransformedDescPtr=*/inputZTensor.preTransformedDescPtr,
+        /*transformedDescPtr=*/inputZTensor.transformedDescPtr,
+        /*bufferSize=*/inputZTensor.bufferSize,
+        /*alignedBuffer=*/stickI8Ptr,
+        /*isTransformed=*/true);
+
+    // Create the clipping value as null because the zDNN LeakyRelu API does not
+    // use it.
+    Value clippingVal = create.llvm.null(krnl::getI8PointerType(context));
+
+    // Create the adjustment factor value from the input alpha attribute.
+    FloatAttr alphaAttr = leakyreluOp.getAlphaAttr();
+    float alphaFloat = (float)alphaAttr.getValueAsDouble();
+    Value adjustmentFactorVal =
+        create.llvm.constant(rewriter.getF32Type(), alphaFloat);
+
+    // Call the zDNN LeakyRelu API.
+    callApi(rewriter, loc, module, apiRegistry, API::ZDNN_LEAKY_RELU,
+        {toOpaquePtr(rewriter, loc, module, inputZTensor.val), clippingVal,
+            adjustmentFactorVal,
+            toOpaquePtr(rewriter, loc, module, outputZTensor.val)});
+
+    rewriter.eraseOp(op);
+    return success();
+  }
+
+private:
+  ApiRegistry apiRegistry;
+};
+
+template <typename REDUCE_OP>
+zdnn_reduce_ops getZDNNReduceOpType() {
+  return REDUCE_OP_MAXIMUM;
+}
+
+template <>
+zdnn_reduce_ops getZDNNReduceOpType<ZLowReduceMaxOp>() {
+  return REDUCE_OP_MAXIMUM;
+}
+
+template <>
+zdnn_reduce_ops getZDNNReduceOpType<ZLowReduceMinOp>() {
+  return REDUCE_OP_MINIMUM;
+}
+
+template <typename REDUCE_OP>
+class ZLowReduceLowering : public ConvertToLLVMPattern {
+public:
+  explicit ZLowReduceLowering(MLIRContext *context,
+      LLVMTypeConverter &lowering_, ApiRegistry apiRegistry)
+      : ConvertToLLVMPattern(
+            REDUCE_OP::getOperationName(), context, lowering_) {
+    this->apiRegistry = apiRegistry;
+  }
+
+  LogicalResult matchAndRewrite(Operation *op, ArrayRef<Value> operands,
+      ConversionPatternRewriter &rewriter) const override {
+    ModuleOp module = op->getParentOfType<ModuleOp>();
+    Location loc = op->getLoc();
+    REDUCE_OP reduceOp = mlir::cast<REDUCE_OP>(op);
+    MultiDialectBuilder<LLVMBuilder> create(rewriter, loc);
+    typename REDUCE_OP::Adaptor operandAdaptor(operands);
+
+    Value data = operandAdaptor.getX();
+    Value shape = operandAdaptor.getShape();
+    Value output = operandAdaptor.getOut();
+    Type llvmElementTy = typeConverter->convertType(
+        mlir::cast<MemRefType>(op->getOperand(0).getType()).getElementType());
+
+    ZTensorHelper zTensorHelper =
+        ZTensorHelper(rewriter, loc, module, apiRegistry);
+
+    // Get zDNN data type.
+    zdnn_data_types zDNNDataType = llvmTypeToZDNNType(llvmElementTy);
+
+    // Get zDNN data layout.
+    zdnn_data_layouts zDNNDataLayout =
+        convertLayoutAttrToZDNNDataLayout(0, reduceOp.getLayoutAttr());
+
+    // Get the dimensions of the original shape (the shape before stickifying)
+    // used for creating a zTensor.
+    std::vector<Value> dims =
+        getDimsFromShapeMemRef(rewriter, loc, module, shape,
+            /*layout=*/zDNNDataLayout);
+
+    Type llvmI64Ty = rewriter.getI64Type();
+    Value one = create.llvm.constant(llvmI64Ty, static_cast<int64_t>(1));
+
+    // Calculation for the output dimension
+    int64_t axis = dims.size() - 1;
+    SmallVector<Value, 4> outputDims;
+    for (int64_t i = 0; i < axis; ++i) {
+      outputDims.emplace_back(dims[i]);
+    }
+    outputDims.emplace_back(one);
+
+    // Create an input zTensor.
+    Value stickI8Ptr = zTensorHelper.getAlignedI8Ptr(data);
+    ZTensor inputZTensor =
+        zTensorHelper.getZTensor(stickI8Ptr, /*dataType=*/zDNNDataType,
+            /*layout=*/zDNNDataLayout, /*originalDims=*/dims,
+            /*isTransformed=*/true);
+
+    // Create an output zTensor.
+    stickI8Ptr = zTensorHelper.getAlignedI8Ptr(output);
+    ZTensor outputZTensor =
+        zTensorHelper.getZTensor(stickI8Ptr, /*dataType=*/zDNNDataType,
+            /*layout=*/zDNNDataLayout, /*originalDims=*/outputDims,
+            /*isTransformed=*/true);
+
+    // work_area.
+    Value workArea =
+        zTensorHelper.getAlignedI8Ptr(operandAdaptor.getWorkArea());
+
+    // op_type
+    zdnn_reduce_ops zdnnOpType = getZDNNReduceOpType<REDUCE_OP>();
+    Value opType = create.llvm.constant(
+        rewriter.getI64Type(), static_cast<int64_t>(zdnnOpType));
+
+    // Call the zDNN ReduceMax/ReduceMin API.
+    callApi(rewriter, loc, module, apiRegistry, API::ZDNN_REDUCE,
+        {toOpaquePtr(rewriter, loc, module, inputZTensor.val), workArea, opType,
+            toOpaquePtr(rewriter, loc, module, outputZTensor.val)});
+
+    rewriter.eraseOp(op);
+    return success();
+  }
+
+private:
+  ApiRegistry apiRegistry;
+};
+
 class ZLowMatMulLowering : public ConvertToLLVMPattern {
 public:
   explicit ZLowMatMulLowering(MLIRContext *context,
@@ -971,12 +1267,261 @@ public:
       ConversionPatternRewriter &rewriter) const override {
     ModuleOp module = op->getParentOfType<ModuleOp>();
     Location loc = op->getLoc();
-    ZLowMatMulOp matmulOp = cast<ZLowMatMulOp>(op);
+    ZLowMatMulOp matmulOp = mlir::cast<ZLowMatMulOp>(op);
     MultiDialectBuilder<LLVMBuilder> create(rewriter, loc);
 
     ZLowMatMulOpAdaptor operandAdaptor(operands);
     Type llvmElementTy = typeConverter->convertType(
-        matmulOp.getX().getType().cast<MemRefType>().getElementType());
+        mlir::cast<MemRefType>(matmulOp.getX().getType()).getElementType());
+
+    bool stacked = false, broadcasting1 = false, broadcasting23 = false,
+         transposeA = false, transposeB = false;
+    if (matmulOp.getIsStacked() == -1)
+      stacked = true;
+    if (matmulOp.getIsBcast1() == -1)
+      broadcasting1 = true;
+    else if (matmulOp.getIsBcast23() == -1)
+      broadcasting23 = true;
+    if (matmulOp.getTransposeA() != 0)
+      transposeA = true;
+    if (matmulOp.getTransposeB() != 0)
+      transposeB = true;
+
+    ZTensorHelper zTensorHelper =
+        ZTensorHelper(rewriter, loc, module, apiRegistry);
+
+    // Some frequently used types and constants.
+    Type llvmI64Ty = rewriter.getI64Type();
+
+    // Get the dimensions of the original shape (the shape before stickifying)
+    // used for creating zTensors.
+    int dimCount = 3;
+    if (stacked || broadcasting1 || broadcasting23)
+      dimCount = 4;
+    std::vector<Value> dims = getDimsFromShapeMemRefBySize(
+        rewriter, loc, module, operandAdaptor.getShape(), /*size=*/dimCount);
+    // Dimensions: s, m, n, p;
+    Value S, M, N, P;
+    if (stacked || broadcasting23) {
+      S = dims[0];
+      M = dims[1];
+      N = dims[2];
+      P = dims[3];
+    } else if (broadcasting1) {
+      M = dims[0];
+      N = dims[1];
+      S = dims[2];
+      P = dims[3];
+    } else {
+      M = dims[0];
+      N = dims[1];
+      P = dims[2];
+    }
+
+    // Get zDNN data type.
+    zdnn_data_types zDNNDataType = llvmTypeToZDNNType(llvmElementTy);
+
+    // Create zTensors.
+    ZTensor xZTensor, yZTensor, biasZTensor, outputZTensor;
+
+    // clang-format off
+    // Requirements
+    // Type        X                    Y                   Bias             Output
+    // ----------------------------------------------------------------------------------------
+    // unstacked   ZDNN_2D (m, n)       ZDNN_2D (n, p)      ZDNN_1D (p)      ZDNN_2D (m, p)
+    // stacked     ZDNN_3DS (s, m, n)   ZDNN_3DS (s, n, p)  ZDNN_2DS (s, p)  ZDNN_3DS (s, m, p)
+    // bcast1      ZDNN_2D (m, n)       ZDNN_3DS (s, n, p)  ZDNN_2DS (s, p)  ZDNN_3DS (s, m, p)
+    // bcast23     ZDNN_3DS (s, m, n)   ZDNN_2D (n, p)      ZDNN_1D (p)      ZDNN_3DS (s, m, p)
+    // clang-format on
+
+    // X
+    Value stickI8Ptr = zTensorHelper.getAlignedI8Ptr(operandAdaptor.getX());
+    if (stacked || broadcasting23) {
+      if (transposeA)
+        // ZDNN_3DS (s, n, m)
+        xZTensor =
+            zTensorHelper.getZTensor(stickI8Ptr, /*dataType=*/zDNNDataType,
+                /*layout=*/ZDNN_3DS, /*originalDims=*/{S, N, M},
+                /*isTransformed=*/true);
+      else
+        // ZDNN_3DS (s, m, n)
+        xZTensor =
+            zTensorHelper.getZTensor(stickI8Ptr, /*dataType=*/zDNNDataType,
+                /*layout=*/ZDNN_3DS, /*originalDims=*/{S, M, N},
+                /*isTransformed=*/true);
+    } else { /* unstacked || broadcasting1 */
+      if (transposeA)
+        // ZDNN_2D (n, m)
+        xZTensor =
+            zTensorHelper.getZTensor(stickI8Ptr, /*dataType=*/zDNNDataType,
+                /*layout=*/ZDNN_2D, /*originalDims=*/{N, M},
+                /*isTransformed=*/true);
+      else
+        // ZDNN_2D (m, n)
+        xZTensor =
+            zTensorHelper.getZTensor(stickI8Ptr, /*dataType=*/zDNNDataType,
+                /*layout=*/ZDNN_2D, /*originalDims=*/{M, N},
+                /*isTransformed=*/true);
+    }
+    // Y
+    stickI8Ptr = zTensorHelper.getAlignedI8Ptr(operandAdaptor.getY());
+    if (stacked || broadcasting1) {
+      if (transposeB)
+        // ZDNN_3DS (s, p, n)
+        yZTensor =
+            zTensorHelper.getZTensor(stickI8Ptr, /*dataType=*/zDNNDataType,
+                /*layout=*/ZDNN_3DS, /*originalDims=*/{S, P, N},
+                /*isTransformed=*/true);
+      else
+        // ZDNN_3DS (s, n, p)
+        yZTensor =
+            zTensorHelper.getZTensor(stickI8Ptr, /*dataType=*/zDNNDataType,
+                /*layout=*/ZDNN_3DS, /*originalDims=*/{S, N, P},
+                /*isTransformed=*/true);
+    } else { /* unstacked || broadcasting23 */
+      if (transposeB)
+        // ZDNN_2D (p, n)
+        yZTensor =
+            zTensorHelper.getZTensor(stickI8Ptr, /*dataType=*/zDNNDataType,
+                /*layout=*/ZDNN_2D, /*originalDims=*/{P, N},
+                /*isTransformed=*/true);
+      else
+        // ZDNN_2D (n, p)
+        yZTensor =
+            zTensorHelper.getZTensor(stickI8Ptr, /*dataType=*/zDNNDataType,
+                /*layout=*/ZDNN_2D, /*originalDims=*/{N, P},
+                /*isTransformed=*/true);
+    }
+    // Bias
+    stickI8Ptr = zTensorHelper.getAlignedI8Ptr(operandAdaptor.getBias());
+    if (stacked || broadcasting1)
+      // ZDNN_2D (s, p)
+      biasZTensor =
+          zTensorHelper.getZTensor(stickI8Ptr, /*dataType=*/zDNNDataType,
+              /*layout=*/ZDNN_2DS, /*originalDims=*/{S, P},
+              /*isTransformed=*/true);
+    else
+      // ZDNN_1D (p)
+      biasZTensor =
+          zTensorHelper.getZTensor(stickI8Ptr, /*dataType=*/zDNNDataType,
+              /*layout=*/ZDNN_1D, /*originalDims=*/{P},
+              /*isTransformed=*/true);
+    // Op_type
+    Value opType;
+    if (broadcasting23 || broadcasting1)
+      opType = create.llvm.constant(
+          llvmI64Ty, static_cast<int64_t>(NNPA_MATMUL_BCAST_OP_ADDITION));
+    else
+      opType = create.llvm.constant(
+          llvmI64Ty, static_cast<int64_t>(NNPA_MATMUL_OP_ADDITION));
+    // Transposing
+    Value transposeAVal;
+    if (transposeA)
+      transposeAVal = create.llvm.constant(llvmI64Ty, static_cast<int64_t>(1));
+    else
+      transposeAVal = create.llvm.constant(llvmI64Ty, static_cast<int64_t>(0));
+    Value transposeBVal;
+    if (transposeB)
+      transposeBVal = create.llvm.constant(llvmI64Ty, static_cast<int64_t>(1));
+    else
+      transposeBVal = create.llvm.constant(llvmI64Ty, static_cast<int64_t>(0));
+    // Output
+    stickI8Ptr = zTensorHelper.getAlignedI8Ptr(operandAdaptor.getOut());
+    if (stacked || broadcasting23 || broadcasting1)
+      outputZTensor =
+          zTensorHelper.getZTensor(stickI8Ptr, /*dataType=*/zDNNDataType,
+              /*layout=*/ZDNN_3DS, /*originalDims=*/{S, M, P},
+              /*isTransformed=*/true);
+    else
+      outputZTensor =
+          zTensorHelper.getZTensor(stickI8Ptr, /*dataType=*/zDNNDataType,
+              /*layout=*/ZDNN_2D, /*originalDims=*/{M, P},
+              /*isTransformed=*/true);
+
+    // Ready to call zDNN MatMul.
+    if (transposeA || transposeB) {
+      callApi(rewriter, loc, module, apiRegistry, API::ZDNN_MATMUL_TRANSPOSE_OP,
+          {toOpaquePtr(rewriter, loc, module, xZTensor.val),
+              toOpaquePtr(rewriter, loc, module, yZTensor.val),
+              toOpaquePtr(rewriter, loc, module, biasZTensor.val),
+              transposeAVal, transposeBVal, opType,
+              toOpaquePtr(rewriter, loc, module, outputZTensor.val)});
+    } else if (broadcasting23 || broadcasting1) {
+      callApi(rewriter, loc, module, apiRegistry, API::ZDNN_MATMUL_BCAST_OP,
+          {toOpaquePtr(rewriter, loc, module, xZTensor.val),
+              toOpaquePtr(rewriter, loc, module, yZTensor.val),
+              toOpaquePtr(rewriter, loc, module, biasZTensor.val), opType,
+              toOpaquePtr(rewriter, loc, module, outputZTensor.val)});
+    } else {
+      callApi(rewriter, loc, module, apiRegistry, API::ZDNN_MATMUL_OP,
+          {toOpaquePtr(rewriter, loc, module, xZTensor.val),
+              toOpaquePtr(rewriter, loc, module, yZTensor.val),
+              toOpaquePtr(rewriter, loc, module, biasZTensor.val), opType,
+              toOpaquePtr(rewriter, loc, module, outputZTensor.val)});
+    }
+
+    rewriter.eraseOp(op);
+    return success();
+  }
+
+private:
+  ApiRegistry apiRegistry;
+};
+
+class ZLowQuantizedMatMulLowering : public ConvertToLLVMPattern {
+public:
+  explicit ZLowQuantizedMatMulLowering(MLIRContext *context,
+      LLVMTypeConverter &lowering_, ApiRegistry apiRegistry)
+      : ConvertToLLVMPattern(
+            ZLowQuantizedMatMulOp::getOperationName(), context, lowering_) {
+    this->apiRegistry = apiRegistry;
+  }
+
+  LogicalResult matchAndRewrite(Operation *op, ArrayRef<Value> operands,
+      ConversionPatternRewriter &rewriter) const override {
+    Location loc = op->getLoc();
+    ModuleOp module = op->getParentOfType<ModuleOp>();
+    MLIRContext *context = module.getContext();
+    MultiDialectBuilder<LLVMBuilder> create(rewriter, loc);
+
+    ZLowQuantizedMatMulOp matmulOp = cast<ZLowQuantizedMatMulOp>(op);
+    ZLowQuantizedMatMulOpAdaptor operandAdaptor(operands);
+
+    // Inputs.
+    // X
+    Value X = operandAdaptor.getX();
+    Value XRecScale = operandAdaptor.getXRecScale();
+    Value XOffset = operandAdaptor.getXOffset();
+    StringRef XQType = matmulOp.getXQType();
+    // Y
+    Value Y = operandAdaptor.getY();
+    Value YRecScale = operandAdaptor.getYRecScale();
+    Value YOffset = operandAdaptor.getYOffset();
+    StringRef YQType = matmulOp.getYQType();
+    // Bias
+    Value Bias = operandAdaptor.getBias();
+    Value BiasRecScale = operandAdaptor.getBiasRecScale();
+    Value BiasOffset = operandAdaptor.getBiasOffset();
+    StringRef BiasQType = matmulOp.getBiasQType();
+    // Out
+    Value Out = operandAdaptor.getOut();
+    Value OutRecScale = operandAdaptor.getOutRecScale();
+    Value OutOffset = operandAdaptor.getOutOffset();
+    StringRef OutQType = matmulOp.getOutQType();
+
+    // Types.
+    Type llvmXElementTy = typeConverter->convertType(
+        mlir::cast<MemRefType>(matmulOp.getX().getType()).getElementType());
+    Type llvmYElementTy = typeConverter->convertType(
+        mlir::cast<MemRefType>(matmulOp.getY().getType()).getElementType());
+    Type llvmBiasElementTy = typeConverter->convertType(
+        mlir::cast<MemRefType>(matmulOp.getBias().getType()).getElementType());
+    Type llvmOutElementTy = typeConverter->convertType(
+        mlir::cast<MemRefType>(matmulOp.getOut().getType()).getElementType());
+    Type llvmF32Ty = rewriter.getF32Type();
+    Type llvmI64Ty = rewriter.getI64Type();
+    Type llvmZTensorTy = getZTensorStructTy(context);
+    Type llvmZTensorPtrTy = krnl::getPointerType(context, llvmZTensorTy);
 
     bool stacked, broadcasting;
     if (matmulOp.getIsStacked() == -1)
@@ -987,12 +1532,6 @@ public:
       broadcasting = true;
     else
       broadcasting = false;
-
-    ZTensorHelper zTensorHelper =
-        ZTensorHelper(rewriter, loc, module, apiRegistry);
-
-    // Some frequently used types and constants.
-    Type llvmI64Ty = rewriter.getI64Type();
 
     // Get the dimensions of the original shape (the shape before stickifying)
     // used for creating zTensors.
@@ -1014,78 +1553,136 @@ public:
       P = dims[2];
     }
 
-    // Get zDNN data type.
-    zdnn_data_types zDNNDataType = llvmTypeToZDNNType(llvmElementTy);
-
     // Create zTensors.
+    ZTensorHelper zTensorHelper =
+        ZTensorHelper(rewriter, loc, module, apiRegistry);
     ZTensor xZTensor, yZTensor, biasZTensor, outputZTensor;
     // X
-    Value stickI8Ptr = zTensorHelper.getAlignedI8Ptr(operandAdaptor.getX());
+    zdnn_data_types zDNNDataType = llvmTypeToZDNNType(llvmXElementTy);
+    zdnn_quantized_transform_types zDNNQType =
+        getQuantizedTransformType(XQType);
+    Value recScale = loadFromMemRef(create.llvm, llvmF32Ty, XRecScale, 0);
+    Value offset = loadFromMemRef(create.llvm, llvmF32Ty, XOffset, 0);
+    Value stickI8Ptr = zTensorHelper.getAlignedI8Ptr(X);
     if (stacked || broadcasting)
-      xZTensor = zTensorHelper.getZTensor(stickI8Ptr, /*dataType=*/zDNNDataType,
-          /*layout=*/ZDNN_3DS, /*originalDims=*/{S, M, N},
+      xZTensor = zTensorHelper.getQuantizedZTensor(stickI8Ptr,
+          /*dataType=*/zDNNDataType, /*layout=*/ZDNN_3DS,
+          /*transformType=*/zDNNQType,
+          /*originalDims=*/{S, M, N},
+          /*recScale=*/recScale, /*offset=*/offset,
           /*isTransformed=*/true);
     else
-      xZTensor = zTensorHelper.getZTensor(stickI8Ptr, /*dataType=*/zDNNDataType,
-          /*layout=*/ZDNN_2D, /*originalDims=*/{M, N},
+      xZTensor = zTensorHelper.getQuantizedZTensor(stickI8Ptr,
+          /*dataType=*/zDNNDataType, /*layout=*/ZDNN_2D,
+          /*transformType=*/zDNNQType,
+          /*originalDims=*/{M, N}, /*recScale=*/recScale, /*offset=*/offset,
           /*isTransformed=*/true);
     // Y
-    stickI8Ptr = zTensorHelper.getAlignedI8Ptr(operandAdaptor.getY());
+    zDNNDataType = llvmTypeToZDNNType(llvmYElementTy);
+    zDNNQType = getQuantizedTransformType(YQType);
+    recScale = loadFromMemRef(create.llvm, llvmF32Ty, YRecScale, 0);
+    offset = loadFromMemRef(create.llvm, llvmF32Ty, YOffset, 0);
+    stickI8Ptr = zTensorHelper.getAlignedI8Ptr(Y);
     if (stacked)
-      yZTensor = zTensorHelper.getZTensor(stickI8Ptr, /*dataType=*/zDNNDataType,
-          /*layout=*/ZDNN_3DS, /*originalDims=*/{S, N, P},
-          /*isTransformed=*/true);
+      yZTensor = zTensorHelper.getQuantizedZTensor(stickI8Ptr,
+          /*dataType=*/zDNNDataType, /*layout=*/ZDNN_3DS,
+          /*transformType=*/zDNNQType, /*originalDims=*/{S, N, P},
+          /*recScale=*/recScale, /*offset=*/offset, /*isTransformed=*/true);
     else
-      yZTensor = zTensorHelper.getZTensor(stickI8Ptr, /*dataType=*/zDNNDataType,
-          /*layout=*/ZDNN_2D, /*originalDims=*/{N, P},
-          /*isTransformed=*/true);
+      yZTensor = zTensorHelper.getQuantizedZTensor(stickI8Ptr,
+          /*dataType=*/zDNNDataType, /*layout=*/ZDNN_2D,
+          /*transformType=*/zDNNQType, /*originalDims=*/{N, P},
+          /*recScale=*/recScale, /*offset=*/offset, /*isTransformed=*/true);
     // Bias
-    stickI8Ptr = zTensorHelper.getAlignedI8Ptr(operandAdaptor.getBias());
+    zDNNDataType = llvmTypeToZDNNType(llvmBiasElementTy);
+    zDNNQType = getQuantizedTransformType(BiasQType);
+    recScale = loadFromMemRef(create.llvm, llvmF32Ty, BiasRecScale, 0);
+    offset = loadFromMemRef(create.llvm, llvmF32Ty, BiasOffset, 0);
+    stickI8Ptr = zTensorHelper.getAlignedI8Ptr(Bias);
     if (stacked)
-      biasZTensor =
-          zTensorHelper.getZTensor(stickI8Ptr, /*dataType=*/zDNNDataType,
-              /*layout=*/ZDNN_2DS, /*originalDims=*/{S, P},
-              /*isTransformed=*/true);
+      biasZTensor = zTensorHelper.getQuantizedZTensor(stickI8Ptr,
+          /*dataType=*/zDNNDataType,
+          /*layout=*/ZDNN_2DS,
+          /*transformType=*/zDNNQType, /*originalDims=*/{S, P},
+          /*recScale=*/recScale, /*offset=*/offset, /*isTransformed=*/true);
     else
-      biasZTensor =
-          zTensorHelper.getZTensor(stickI8Ptr, /*dataType=*/zDNNDataType,
-              /*layout=*/ZDNN_1D, /*originalDims=*/{P},
-              /*isTransformed=*/true);
+      biasZTensor = zTensorHelper.getQuantizedZTensor(stickI8Ptr,
+          /*dataType=*/zDNNDataType, /*layout=*/ZDNN_1D,
+          /*transformType=*/zDNNQType, /*originalDims=*/{P},
+          /*recScale=*/recScale, /*offset=*/offset, /*isTransformed=*/true);
+
     // Op_type
-    Value op_type;
-    if (broadcasting)
-      op_type = create.llvm.constant(
-          llvmI64Ty, (int64_t)NNPA_MATMUL_BCAST_OP_ADDITION);
+    Value opType = create.llvm.constant(
+        llvmI64Ty, static_cast<int64_t>(NNPA_MATMUL_OP_ADDITION));
+
+    // Min, Max clip values.
+    Value clipMIN =
+        create.llvm.constant(llvmI64Ty, static_cast<int64_t>(INT8_MIN));
+    Value clipMAX =
+        create.llvm.constant(llvmI64Ty, static_cast<int64_t>(INT8_MAX));
+
+    // work_area.
+    Value workArea;
+    if (mlir::isa<NoneType>(matmulOp.getWorkArea().getType()))
+      workArea = create.llvm.null(krnl::getI8PointerType(context));
     else
-      op_type =
-          create.llvm.constant(llvmI64Ty, (int64_t)NNPA_MATMUL_OP_ADDITION);
+      workArea = zTensorHelper.getAlignedI8Ptr(operandAdaptor.getWorkArea());
+
     // Output
-    stickI8Ptr = zTensorHelper.getAlignedI8Ptr(operandAdaptor.getOut());
+    zDNNDataType = llvmTypeToZDNNType(llvmOutElementTy);
+    zDNNQType = getQuantizedTransformType(OutQType);
+    recScale = loadFromMemRef(create.llvm, llvmF32Ty, OutRecScale, 0);
+    offset = loadFromMemRef(create.llvm, llvmF32Ty, OutOffset, 0);
+    stickI8Ptr = zTensorHelper.getAlignedI8Ptr(Out);
     if (stacked || broadcasting)
-      outputZTensor =
-          zTensorHelper.getZTensor(stickI8Ptr, /*dataType=*/zDNNDataType,
-              /*layout=*/ZDNN_3DS, /*originalDims=*/{S, M, P},
-              /*isTransformed=*/true);
+      outputZTensor = zTensorHelper.getQuantizedZTensor(stickI8Ptr,
+          /*dataType=*/zDNNDataType,
+          /*layout=*/ZDNN_3DS,
+          /*transformType=*/zDNNQType,
+          /*originalDims=*/{S, M, P},
+          /*recScale=*/recScale, /*offset=*/offset,
+          /*isTransformed=*/true);
     else
-      outputZTensor =
-          zTensorHelper.getZTensor(stickI8Ptr, /*dataType=*/zDNNDataType,
-              /*layout=*/ZDNN_2D, /*originalDims=*/{M, P},
-              /*isTransformed=*/true);
+      outputZTensor = zTensorHelper.getQuantizedZTensor(stickI8Ptr,
+          /*dataType=*/zDNNDataType,
+          /*layout=*/ZDNN_2D,
+          /*transformType=*/zDNNQType,
+          /*originalDims=*/{M, P},
+          /*recScale=*/recScale, /*offset=*/offset,
+          /*isTransformed=*/true);
 
     // Ready to call zDNN MatMul.
-    if (broadcasting) {
-      callApi(rewriter, loc, module, apiRegistry, API::ZDNN_MATMUL_BCAST_OP,
-          {toOpaquePtr(rewriter, loc, module, xZTensor.val),
-              toOpaquePtr(rewriter, loc, module, yZTensor.val),
-              toOpaquePtr(rewriter, loc, module, biasZTensor.val), op_type,
-              toOpaquePtr(rewriter, loc, module, outputZTensor.val)});
-    } else {
-      callApi(rewriter, loc, module, apiRegistry, API::ZDNN_MATMUL_OP,
-          {toOpaquePtr(rewriter, loc, module, xZTensor.val),
-              toOpaquePtr(rewriter, loc, module, yZTensor.val),
-              toOpaquePtr(rewriter, loc, module, biasZTensor.val), op_type,
-              toOpaquePtr(rewriter, loc, module, outputZTensor.val)});
-    }
+    Value disableClipping = create.llvm.constant(
+        llvmI64Ty, static_cast<int64_t>(matmulOp.getDisableClipping()));
+    Value dequantizeOutput = create.llvm.constant(
+        llvmI64Ty, static_cast<int64_t>(matmulOp.getDequantizeOutput()));
+    Value preComputedBias = create.llvm.constant(
+        llvmI64Ty, static_cast<int64_t>(matmulOp.getPreComputedBias()));
+    zlow::API apiName = API::ZDNN_QUANTIZED_MATMUL_OP;
+    callApi(rewriter, loc, module, apiRegistry, apiName,
+        {/*input_a=*/toOpaquePtr(rewriter, loc, module, xZTensor.val),
+            /*input_b=*/toOpaquePtr(rewriter, loc, module, yZTensor.val),
+            /*input_c=*/toOpaquePtr(rewriter, loc, module, biasZTensor.val),
+            /*op_type=*/opType,
+            /*clip_min=*/clipMIN,
+            /*clip_max=*/clipMAX,
+            /*disable_clipping=*/disableClipping,
+            /*dequantized=*/dequantizeOutput,
+            /*pre_computed=*/preComputedBias,
+            /*work_area=*/workArea,
+            /*output=*/
+            toOpaquePtr(rewriter, loc, module, outputZTensor.val)});
+
+    // Store the output rec_scale.
+    Value recScalePtr = create.llvm.getElemPtr(llvmZTensorPtrTy, llvmZTensorTy,
+        outputZTensor.val, ArrayRef<LLVM::GEPArg>{0, 6});
+    Value outRecScale = create.llvm.load(llvmF32Ty, recScalePtr);
+    storeToMemRef(create.llvm, outRecScale, OutRecScale, 0);
+    // Store the output offset.
+    Value offsetPtr = create.llvm.getElemPtr(llvmZTensorPtrTy, llvmZTensorTy,
+        outputZTensor.val, ArrayRef<LLVM::GEPArg>{0, 7});
+    Value outOffset = create.llvm.load(llvmF32Ty, offsetPtr);
+    storeToMemRef(create.llvm, outOffset, OutOffset, 0);
 
     rewriter.eraseOp(op);
     return success();
@@ -1109,12 +1706,12 @@ public:
     ModuleOp module = op->getParentOfType<ModuleOp>();
     Location loc = op->getLoc();
     MLIRContext *context = rewriter.getContext();
-    ZLowConv2DOp convOp = cast<ZLowConv2DOp>(op);
+    ZLowConv2DOp convOp = mlir::cast<ZLowConv2DOp>(op);
     ZLowConv2DOpAdaptor operandAdaptor(operands);
     MultiDialectBuilder<LLVMBuilder> create(rewriter, loc);
 
     Type llvmElementTy = typeConverter->convertType(
-        convOp.getInput().getType().cast<MemRefType>().getElementType());
+        mlir::cast<MemRefType>(convOp.getInput().getType()).getElementType());
 
     ZTensorHelper zTensorHelper =
         ZTensorHelper(rewriter, loc, module, apiRegistry);
@@ -1145,10 +1742,12 @@ public:
         convOp.getKernelShape().getValue();
     // kernel height
     Value KH = create.llvm.constant(llvmI64Ty,
-        (int64_t)kernelShapeArrayAttr[0].cast<IntegerAttr>().getInt());
+        static_cast<int64_t>(
+            mlir::cast<IntegerAttr>(kernelShapeArrayAttr[0]).getInt()));
     // kernel width
     Value KW = create.llvm.constant(llvmI64Ty,
-        (int64_t)kernelShapeArrayAttr[1].cast<IntegerAttr>().getInt());
+        static_cast<int64_t>(
+            mlir::cast<IntegerAttr>(kernelShapeArrayAttr[1]).getInt()));
 
     // Get zDNN data type.
     zdnn_data_types zDNNDataType = llvmTypeToZDNNType(llvmElementTy);
@@ -1178,28 +1777,30 @@ public:
     Value paddingType;
     if (convOp.getPaddingType().equals_insensitive("SAME_PADDING"))
       paddingType = create.llvm.constant(
-          llvmI64Ty, (int64_t)zdnn_pool_padding::SAME_PADDING);
+          llvmI64Ty, static_cast<int64_t>(zdnn_pool_padding::SAME_PADDING));
     else if (convOp.getPaddingType().equals_insensitive("VALID_PADDING"))
       paddingType = create.llvm.constant(
-          llvmI64Ty, (int64_t)zdnn_pool_padding::VALID_PADDING);
+          llvmI64Ty, static_cast<int64_t>(zdnn_pool_padding::VALID_PADDING));
     else
       llvm_unreachable("Unsupported padding type");
 
     // Strides
     ArrayRef<Attribute> strideArrayAttr = convOp.getStrides().getValue();
     Value strideHeight = create.llvm.constant(
-        llvmI64Ty, (int64_t)strideArrayAttr[0].cast<IntegerAttr>().getInt());
+        llvmI64Ty, static_cast<int64_t>(
+                       mlir::cast<IntegerAttr>(strideArrayAttr[0]).getInt()));
     Value strideWidth = create.llvm.constant(
-        llvmI64Ty, (int64_t)strideArrayAttr[1].cast<IntegerAttr>().getInt());
+        llvmI64Ty, static_cast<int64_t>(
+                       mlir::cast<IntegerAttr>(strideArrayAttr[1]).getInt()));
 
     // Activation function.
     Value actFunc;
     if (convOp.getActFunc().equals_insensitive("ACT_NONE"))
       actFunc = create.llvm.constant(
-          llvmI64Ty, (int64_t)zdnn_conv2d_act::CONV2D_ACT_NONE);
+          llvmI64Ty, static_cast<int64_t>(zdnn_conv2d_act::CONV2D_ACT_NONE));
     else if (convOp.getActFunc().equals_insensitive("ACT_RELU"))
       actFunc = create.llvm.constant(
-          llvmI64Ty, (int64_t)zdnn_conv2d_act::CONV2D_ACT_RELU);
+          llvmI64Ty, static_cast<int64_t>(zdnn_conv2d_act::CONV2D_ACT_RELU));
     else
       llvm_unreachable("Unsupported activation function");
 
@@ -1256,7 +1857,7 @@ public:
       ConversionPatternRewriter &rewriter) const override {
     ModuleOp module = op->getParentOfType<ModuleOp>();
     Location loc = op->getLoc();
-    POOLOP poolOp = cast<POOLOP>(op);
+    POOLOP poolOp = mlir::cast<POOLOP>(op);
     typename POOLOP::Adaptor operandAdaptor(operands);
     MultiDialectBuilder<LLVMBuilder> create(rewriter, loc);
 
@@ -1264,7 +1865,7 @@ public:
     Value shape = operandAdaptor.getShape();
     Value output = operandAdaptor.getOutput();
     Type llvmElementTy = typeConverter->convertType(
-        op->getOperand(0).getType().cast<MemRefType>().getElementType());
+        mlir::cast<MemRefType>(op->getOperand(0).getType()).getElementType());
 
     ZTensorHelper zTensorHelper =
         ZTensorHelper(rewriter, loc, module, apiRegistry);
@@ -1293,10 +1894,12 @@ public:
         poolOp.getKernelShape().getValue();
     // kernel height
     Value KH = create.llvm.constant(llvmI64Ty,
-        (int64_t)kernelShapeArrayAttr[0].cast<IntegerAttr>().getInt());
+        static_cast<int64_t>(
+            mlir::cast<IntegerAttr>(kernelShapeArrayAttr[0]).getInt()));
     // kernel width
     Value KW = create.llvm.constant(llvmI64Ty,
-        (int64_t)kernelShapeArrayAttr[1].cast<IntegerAttr>().getInt());
+        static_cast<int64_t>(
+            mlir::cast<IntegerAttr>(kernelShapeArrayAttr[1]).getInt()));
 
     // Get zDNN data type.
     zdnn_data_types zDNNDataType = llvmTypeToZDNNType(llvmElementTy);
@@ -1312,19 +1915,21 @@ public:
     Value paddingType;
     if (poolOp.getPaddingType().equals_insensitive("SAME_PADDING"))
       paddingType = create.llvm.constant(
-          llvmI64Ty, (int64_t)zdnn_pool_padding::SAME_PADDING);
+          llvmI64Ty, static_cast<int64_t>(zdnn_pool_padding::SAME_PADDING));
     else if (poolOp.getPaddingType().equals_insensitive("VALID_PADDING"))
       paddingType = create.llvm.constant(
-          llvmI64Ty, (int64_t)zdnn_pool_padding::VALID_PADDING);
+          llvmI64Ty, static_cast<int64_t>(zdnn_pool_padding::VALID_PADDING));
     else
       llvm_unreachable("Unsupported padding type");
 
     // Strides
     ArrayRef<Attribute> strideArrayAttr = poolOp.getStrides().getValue();
     Value strideHeight = create.llvm.constant(
-        llvmI64Ty, (int64_t)strideArrayAttr[0].cast<IntegerAttr>().getInt());
+        llvmI64Ty, static_cast<int64_t>(
+                       mlir::cast<IntegerAttr>(strideArrayAttr[0]).getInt()));
     Value strideWidth = create.llvm.constant(
-        llvmI64Ty, (int64_t)strideArrayAttr[1].cast<IntegerAttr>().getInt());
+        llvmI64Ty, static_cast<int64_t>(
+                       mlir::cast<IntegerAttr>(strideArrayAttr[1]).getInt()));
 
     // Create zTensor for output.
     stickI8Ptr = zTensorHelper.getAlignedI8Ptr(output);
@@ -1360,19 +1965,19 @@ public:
       ConversionPatternRewriter &rewriter) const override {
     ModuleOp module = op->getParentOfType<ModuleOp>();
     Location loc = op->getLoc();
-    ZLowMeanReduce2DOp meanOp = cast<ZLowMeanReduce2DOp>(op);
+    ZLowMeanReduce2DOp meanOp = mlir::cast<ZLowMeanReduce2DOp>(op);
     MultiDialectBuilder<LLVMBuilder> create(rewriter, loc);
 
     ZLowMeanReduce2DOpAdaptor operandAdaptor(operands);
     Type llvmElementTy = typeConverter->convertType(
-        meanOp.getInput().getType().cast<MemRefType>().getElementType());
+        mlir::cast<MemRefType>(meanOp.getInput().getType()).getElementType());
 
     ZTensorHelper zTensorHelper =
         ZTensorHelper(rewriter, loc, module, apiRegistry);
 
     // Some frequently used types and constants.
     Type llvmI64Ty = rewriter.getI64Type();
-    Value oneI64 = create.llvm.constant(llvmI64Ty, (int64_t)1);
+    Value oneI64 = create.llvm.constant(llvmI64Ty, static_cast<int64_t>(1));
 
     // Get the dimensions of the original shape (the shape before stickifying)
     // used for creating zTensors.
@@ -1429,11 +2034,12 @@ public:
       ConversionPatternRewriter &rewriter) const override {
     ModuleOp module = op->getParentOfType<ModuleOp>();
     Location loc = op->getLoc();
-    ZLowBatchNormOp batchnormOp = cast<ZLowBatchNormOp>(op);
+    ZLowBatchNormOp batchnormOp = mlir::cast<ZLowBatchNormOp>(op);
 
     ZLowBatchNormOpAdaptor operandAdaptor(operands);
     Type llvmElementTy = typeConverter->convertType(
-        batchnormOp.getInput().getType().cast<MemRefType>().getElementType());
+        mlir::cast<MemRefType>(batchnormOp.getInput().getType())
+            .getElementType());
 
     ZTensorHelper zTensorHelper =
         ZTensorHelper(rewriter, loc, module, apiRegistry);
@@ -1528,15 +2134,17 @@ public:
     } else {
       if (SIMD_FOR_DLF16_CONVERSION) {
         // a vector of 8 elements of i16 - for input
-        Type vecTypeI16 = LLVM::getFixedVectorType(i16Ty, 8);
+        Type vecTypeI16 = mlir::VectorType::get(8, i16Ty);
         // a vector of 4 elements of i32 - for output
-        Type vecTypeI32 = LLVM::getFixedVectorType(i32Ty, 4);
-        Type vecTypeF32 = LLVM::getFixedVectorType(f32Ty, 4);
+        Type vecTypeI32 = mlir::VectorType::get(4, i32Ty);
+        Type vecTypeF32 = mlir::VectorType::get(4, f32Ty);
 
-        // SIMD instruction in string for z/Linux.
+        // SIMD instruction in string for z/Linux and z/OS.
         // Convert and lengthen from DLF16: VCLFN(H/L) V1,V2,M3,M4
         // M3 = 2 = FP32, M4 = 0 = DLF16
-        const char *asmStr = "VCLFNH $0,$2,2,0 \n\t VCLFNL $1,$2,2,0 \n\t";
+        // Note the spaces are required by the z/OS assembler.
+        const char *asmStr = "       VCLFNH $0,$2,2,0       \n\t"
+                             "       VCLFNL $1,$2,2,0       \n\t";
         const char *asmConstraints = "=&v,=v,v";
 
         // Prepare the input vector.
@@ -1555,6 +2163,7 @@ public:
                     /*asm_string=*/asmStr,
                     /*constraints=*/asmConstraints, /*has_side_effects=*/false,
                     /*is_align_stack=*/false,
+                    /*tail_call_kind=*/LLVM::TailCallKind::None,
                     /*asm_dialect=*/LLVM::AsmDialectAttr(),
                     /*operand_attrs=*/ArrayAttr())
                 .getResult(0);
@@ -1570,10 +2179,10 @@ public:
         // https://github.com/tungld/onnx-mlir-tools/blob/main/convert_dlf16_to_f32.cpp
         Value inputI32 = create.llvm.zext(i32Ty, inputI16);
         // ~DLF16_SIGN
-        Value c32767 = create.llvm.constant(i32Ty, (int64_t)32767);
+        Value c32767 = create.llvm.constant(i32Ty, static_cast<int64_t>(32767));
         // dlf16 & ~DLF16_SIGN
         Value v19 = create.llvm.andi(inputI32, c32767);
-        Value c0 = create.llvm.constant(i32Ty, (int64_t)0);
+        Value c0 = create.llvm.constant(i32Ty, static_cast<int64_t>(0));
 
         // Split the block right before the current op into two blocks.
         Block *currentBlock = rewriter.getInsertionBlock();
@@ -1601,9 +2210,11 @@ public:
 
         // Emit code for zero case.
         rewriter.setInsertionPointToEnd(trueBlock);
-        Value cf0 = create.llvm.constant(f32Ty, (float)0.000000e+00);
-        Value cfm0 = create.llvm.constant(f32Ty, (float)-0.000000e+00);
-        Value c32768 = create.llvm.constant(i32Ty, (int64_t)32768);
+        Value cf0 =
+            create.llvm.constant(f32Ty, static_cast<float>(0.000000e+00));
+        Value cfm0 =
+            create.llvm.constant(f32Ty, static_cast<float>(-0.000000e+00));
+        Value c32768 = create.llvm.constant(i32Ty, static_cast<int64_t>(32768));
         Value v20 = create.llvm.andi(inputI32, c32768);
         Value v21 = create.llvm.icmp(LLVM::ICmpPredicate::eq, v20, c0);
         Value v22 = create.llvm.select(v21, cf0, cfm0);
@@ -1617,21 +2228,25 @@ public:
               condBlock->splitBlock(rewriter.getInsertionPoint());
 
           rewriter.setInsertionPointToEnd(condBlock);
-          Value nan = create.llvm.constant(f32Ty, (float)0x7FC00000);
-          Value inf = create.llvm.constant(i32Ty, (int64_t)32767);
+          Value nan =
+              create.llvm.constant(f32Ty, static_cast<float>(0x7FC00000));
+          Value inf = create.llvm.constant(i32Ty, static_cast<int64_t>(32767));
           Value v19Inf = create.llvm.icmp(LLVM::ICmpPredicate::eq, v19, inf);
           // Emit `if (v19 == inf) then endBlock(nan) else defaultBlock`
           create.llvm.condBr(v19Inf, endBlock, {nan}, defaultBlock, {});
 
           // Emit code for non-infinity case.
           rewriter.setInsertionPointToEnd(defaultBlock);
-          Value c14 = create.llvm.constant(i32Ty, (int64_t)14);
-          Value c16 = create.llvm.constant(i32Ty, (int64_t)16);
+          Value c14 = create.llvm.constant(i32Ty, static_cast<int64_t>(14));
+          Value c16 = create.llvm.constant(i32Ty, static_cast<int64_t>(16));
           Value cm2147483648 =
-              create.llvm.constant(i32Ty, (int64_t)-2147483648);
-          Value c528482304 = create.llvm.constant(i32Ty, (int64_t)528482304);
-          Value c805306368 = create.llvm.constant(i32Ty, (int64_t)805306368);
-          Value c8372224 = create.llvm.constant(i32Ty, (int64_t)8372224);
+              create.llvm.constant(i32Ty, static_cast<int64_t>(-2147483648));
+          Value c528482304 =
+              create.llvm.constant(i32Ty, static_cast<int64_t>(528482304));
+          Value c805306368 =
+              create.llvm.constant(i32Ty, static_cast<int64_t>(805306368));
+          Value c8372224 =
+              create.llvm.constant(i32Ty, static_cast<int64_t>(8372224));
           Value v23 = create.llvm.shl(inputI32, c16);
           Value v24 = create.llvm.andi(v23, cm2147483648);
           Value v25 = create.llvm.shl(inputI32, c14);
@@ -1690,15 +2305,16 @@ public:
     } else {
       if (SIMD_FOR_DLF16_CONVERSION) {
         // a vector of 4 elements of i32 - for input
-        Type vecTypeI32 = LLVM::getFixedVectorType(i32Ty, 4);
+        Type vecTypeI32 = mlir::VectorType::get(4, i32Ty);
         // a vector of 8 elements of i16 - for output
-        Type vecTypeI16 = LLVM::getFixedVectorType(i16Ty, 8);
-        Type vecTypeF16 = LLVM::getFixedVectorType(f16Ty, 8);
+        Type vecTypeI16 = mlir::VectorType::get(8, i16Ty);
+        Type vecTypeF16 = mlir::VectorType::get(8, f16Ty);
 
-        // SIMD instruction in string for z/Linux.
+        // SIMD instruction in string for z/Linux and z/OS.
         // Convert and round to DLF16: VCRNF V1,V2,V3,M4,M5
         // M4 = 0 = DLF16, M5 = 2 = FP32
-        const char *asmStr = "VCRNF $0,$1,$2,0,2";
+        // Note the spaces are required by the z/OS assembler.
+        const char *asmStr = "       VCRNF $0,$1,$2,0,2         \n\t";
         const char *asmConstraints = "=v,v,v";
 
         // Prepare two input vectors: each for left/right four elements.
@@ -1719,6 +2335,7 @@ public:
                     /*asm_string=*/asmStr,
                     /*constraints=*/asmConstraints, /*has_side_effects=*/false,
                     /*is_align_stack=*/false,
+                    /*tail_call_kind=*/LLVM::TailCallKind::None,
                     /*asm_dialect=*/LLVM::AsmDialectAttr(),
                     /*operand_attrs=*/ArrayAttr())
                 .getResult(0);
@@ -1730,23 +2347,27 @@ public:
         // `clang -emit-llvm convert_f32_to_dlf16.cpp  -S -O3`
         // where `convert_f32_to_dlf16.cpp` can be found at
         // https://github.com/tungld/onnx-mlir-tools/blob/main/convert_f32_to_dlf16.cpp
-        Value c0 = create.llvm.constant(i32Ty, (int64_t)0);
-        Value c9 = create.llvm.constant(i32Ty, (int64_t)9);
-        Value c14 = create.llvm.constant(i32Ty, (int64_t)14);
-        Value c16 = create.llvm.constant(i32Ty, (int64_t)16);
-        Value c23 = create.llvm.constant(i32Ty, (int64_t)23);
-        Value c255 = create.llvm.constant(i32Ty, (int64_t)255);
-        Value c8192 = create.llvm.constant(i32Ty, (int64_t)8192);
-        Value c32767 = create.llvm.constant(i32Ty, (int64_t)32767);
-        Value c32768 = create.llvm.constant(i32Ty, (int64_t)32768);
-        Value c32256 = create.llvm.constant(i32Ty, (int64_t)32256);
-        Value c8388607 = create.llvm.constant(i32Ty, (int64_t)8388607);
-        Value c8380415 = create.llvm.constant(i32Ty, (int64_t)8380415);
-        Value c1342152704 = create.llvm.constant(i32Ty, (int64_t)1342152704);
-        Value c2147475456 = create.llvm.constant(i32Ty, (int64_t)2147475456);
-        Value cm1 = create.llvm.constant(i32Ty, (int64_t)-1);
-        Value cm95 = create.llvm.constant(i32Ty, (int64_t)-95);
-        Value cm96 = create.llvm.constant(i32Ty, (int64_t)-96);
+        Value c0 = create.llvm.constant(i32Ty, static_cast<int64_t>(0));
+        Value c9 = create.llvm.constant(i32Ty, static_cast<int64_t>(9));
+        Value c14 = create.llvm.constant(i32Ty, static_cast<int64_t>(14));
+        Value c16 = create.llvm.constant(i32Ty, static_cast<int64_t>(16));
+        Value c23 = create.llvm.constant(i32Ty, static_cast<int64_t>(23));
+        Value c255 = create.llvm.constant(i32Ty, static_cast<int64_t>(255));
+        Value c8192 = create.llvm.constant(i32Ty, static_cast<int64_t>(8192));
+        Value c32767 = create.llvm.constant(i32Ty, static_cast<int64_t>(32767));
+        Value c32768 = create.llvm.constant(i32Ty, static_cast<int64_t>(32768));
+        Value c32256 = create.llvm.constant(i32Ty, static_cast<int64_t>(32256));
+        Value c8388607 =
+            create.llvm.constant(i32Ty, static_cast<int64_t>(8388607));
+        Value c8380415 =
+            create.llvm.constant(i32Ty, static_cast<int64_t>(8380415));
+        Value c1342152704 =
+            create.llvm.constant(i32Ty, static_cast<int64_t>(1342152704));
+        Value c2147475456 =
+            create.llvm.constant(i32Ty, static_cast<int64_t>(2147475456));
+        Value cm1 = create.llvm.constant(i32Ty, static_cast<int64_t>(-1));
+        Value cm95 = create.llvm.constant(i32Ty, static_cast<int64_t>(-95));
+        Value cm96 = create.llvm.constant(i32Ty, static_cast<int64_t>(-96));
         Value inputI32 = create.llvm.bitcast(i32Ty, input);
         Value v24 = create.llvm.lshr(inputI32, c23);
         Value v25 = create.llvm.andi(v24, c255);
@@ -1836,19 +2457,24 @@ public:
     MultiDialectBuilder<LLVMBuilder> create(rewriter, loc);
 
     // Vector types.
-    Type vecTypeI16 = LLVM::getFixedVectorType(rewriter.getI16Type(), 8);
-    Type vecTypeI32 = LLVM::getFixedVectorType(rewriter.getI32Type(), 4);
-    Type vecTypeF32 = LLVM::getFixedVectorType(rewriter.getF32Type(), 4);
+    Type vecTypeI16 = mlir::VectorType::get(8, rewriter.getI16Type());
+    Type vecTypeI32 = mlir::VectorType::get(4, rewriter.getI32Type());
+    Type vecTypeF32 = mlir::VectorType::get(4, rewriter.getF32Type());
 
     // Use integer as container.
     ZLowConvertDLF16ToF32VectorOp::Adaptor operandAdaptor(operands);
     Value inputVecI16 =
         create.llvm.bitcast(vecTypeI16, operandAdaptor.getInput());
 
-    // Emit SIMD instruction for conversion.
-    // TODO: check if z/OS uses the same or different instruction.
-    const char *asmStr = ".insn vrr,0xe60000000056,$0,$2,0,2,0,0 \n\t"
-                         ".insn vrr,0xe6000000005E,$1,$2,0,2,0,0 \n\t";
+    // SIMD instruction in string for z/Linux and z/OS.
+    // Note this .insn version of asmStr was used previously for z/Linux.
+    // const char *asmStr = ".insn vrr,0xe60000000056,$0,$2,0,2,0,0 \n\t"
+    //                      ".insn vrr,0xe6000000005E,$1,$2,0,2,0,0 \n\t";
+    // Convert and lengthen from DLF16: VCLFN(H/L) V1,V2,M3,M4
+    // M3 = 2 = FP32, M4 = 0 = DLF16
+    // Note the spaces are required by the z/OS assembler.
+    const char *asmStr = "       VCLFNH $0,$2,2,0       \n\t"
+                         "       VCLFNL $1,$2,2,0       \n\t";
     const char *asmConstraints = "=&v,=v,v";
     SmallVector<Value> asmVals{inputVecI16};
     Value outVecI32Struct =
@@ -1860,6 +2486,7 @@ public:
                 /*asm_string=*/asmStr,
                 /*constraints=*/asmConstraints, /*has_side_effects=*/false,
                 /*is_align_stack=*/false,
+                /*tail_call_kind=*/LLVM::TailCallKind::None,
                 /*asm_dialect=*/LLVM::AsmDialectAttr(),
                 /*operand_attrs=*/ArrayAttr())
             .getResult(0);
@@ -1892,18 +2519,22 @@ public:
     MultiDialectBuilder<LLVMBuilder> create(rewriter, loc);
 
     // Vector types.
-    Type vecTypeI16 = LLVM::getFixedVectorType(rewriter.getI16Type(), 8);
-    Type vecTypeI32 = LLVM::getFixedVectorType(rewriter.getI32Type(), 4);
-    Type vecTypeF16 = LLVM::getFixedVectorType(rewriter.getF16Type(), 8);
+    Type vecTypeI16 = mlir::VectorType::get(8, rewriter.getI16Type());
+    Type vecTypeI32 = mlir::VectorType::get(4, rewriter.getI32Type());
+    Type vecTypeF16 = mlir::VectorType::get(8, rewriter.getF16Type());
 
     // Use integer as container.
     ZLowConvertF32ToDLF16VectorOp::Adaptor operandAdaptor(operands);
     Value vecI32H = create.llvm.bitcast(vecTypeI32, operandAdaptor.getInput1());
     Value vecI32L = create.llvm.bitcast(vecTypeI32, operandAdaptor.getInput2());
 
-    // Emit SIMD instruction for conversion.
-    // TODO: check if z/OS uses the same or different instruction.
-    const char *asmStr = ".insn vrr,0xe60000000075,$0,$1,$2,0,2,0";
+    // SIMD instruction in string for z/Linux and z/OS.
+    // Note this .insn version of asmStr was used previously for z/Linux.
+    // asmStr = ".insn vrr,0xe60000000075,$0,$1,$2,0,2,0";
+    // Convert and round to DLF16: VCRNF V1,V2,V3,M4,M5
+    // M4 = 0 = DLF16, M5 = 2 = FP32
+    // Note the spaces are required by the z/OS assembler.
+    const char *asmStr = "       VCRNF $0,$1,$2,0,2         \n\t";
     const char *asmConstraints = "=v,v,v";
     SmallVector<Value> asmVals{vecI32H, vecI32L};
 
@@ -1915,6 +2546,7 @@ public:
                 /*asm_string=*/asmStr,
                 /*constraints=*/asmConstraints, /*has_side_effects=*/false,
                 /*is_align_stack=*/false,
+                /*tail_call_kind=*/LLVM::TailCallKind::None,
                 /*asm_dialect=*/LLVM::AsmDialectAttr(),
                 /*operand_attrs=*/ArrayAttr())
             .getResult(0);
@@ -1934,6 +2566,7 @@ void populateZLowToLLVMConversionPattern(mlir::RewritePatternSet &patterns,
   // clang-format off
   patterns.insert<
       ZLowStickLowering,
+      ZLowQuantizedStickLowering,
       ZLowUnstickLowering,
       ZLowStickForLSTMLowering,
       ZLowStickForGRULowering,
@@ -1944,9 +2577,11 @@ void populateZLowToLLVMConversionPattern(mlir::RewritePatternSet &patterns,
       ZLowGRULowering,
       // Other operations
       ZLowMatMulLowering,
+      ZLowQuantizedMatMulLowering,
       ZLowConv2DLowering,
       ZLowMeanReduce2DLowering,
       ZLowBatchNormLowering,
+      ZLowLeakyReluLowering,
       // Scalar operations
       ZLowDLF16ToF32Lowering,
       ZLowF32ToDLF16Lowering,
@@ -1965,13 +2600,18 @@ void populateZLowToLLVMConversionPattern(mlir::RewritePatternSet &patterns,
       // Unary operations
       ZLowUnaryElementwiseOpLowering<ZLowLogOp>,
       ZLowUnaryElementwiseOpLowering<ZLowExpOp>,
+      ZLowUnaryElementwiseOpLowering<ZLowInvSqrtOp>,
       // Activation operations
       ZLowUnaryElementwiseOpLowering<ZLowReluOp>,
+      ZLowUnaryElementwiseOpLowering<ZLowGeluOp>,
       ZLowUnaryElementwiseOpLowering<ZLowTanhOp>,
       ZLowUnaryElementwiseOpLowering<ZLowSigmoidOp>,
+      ZLowUnaryElementwiseOpLowering<ZLowSqrtOp>,
       // Other operations
       ZLowPool2DLowering<ZLowAvgPool2DOp>,
-      ZLowPool2DLowering<ZLowMaxPool2DOp>
+      ZLowPool2DLowering<ZLowMaxPool2DOp>,
+      ZLowReduceLowering<ZLowReduceMaxOp>,
+      ZLowReduceLowering<ZLowReduceMinOp>
     >(ctx, typeConverter, apiRegistry);
   // clang-format on
 }

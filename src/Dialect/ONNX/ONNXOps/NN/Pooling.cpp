@@ -4,7 +4,7 @@
 
 //===------------------ Pooling.cpp - ONNX Operations ---------------------===//
 //
-// Copyright 2019-2022 The IBM Research Authors.
+// Copyright 2019-2024 The IBM Research Authors.
 //
 // =============================================================================
 //
@@ -38,8 +38,8 @@ LogicalResult ONNXGenericGlobalPoolOpShapeHelper<OP_TYPE>::computeShape() {
   outputDims.emplace_back(xDims[0]);
   outputDims.emplace_back(xDims[1]);
   // Spatial dimensions are reduced to 1.
-  for (int i = 2; i < (int)xDims.size(); ++i)
-    outputDims.emplace_back(LiteralIndexExpr(1));
+  for (int i = 2; i < static_cast<int>(xDims.size()); ++i)
+    outputDims.emplace_back(LitIE(1));
   // Save the final result.
   setOutputDims(outputDims);
   return success();
@@ -48,21 +48,25 @@ LogicalResult ONNXGenericGlobalPoolOpShapeHelper<OP_TYPE>::computeShape() {
 template <>
 LogicalResult ONNXMaxRoiPoolOpShapeHelper::computeShape() {
   ONNXMaxRoiPoolOpAdaptor operandAdaptor(operands, op->getAttrDictionary());
-
   IndexExpr channel = createIE->getShapeAsDim(operandAdaptor.getX(), 1);
-  uint64_t roisRank = createIE->getShapedTypeRank(operandAdaptor.getRois());
+
+  const auto rois = operandAdaptor.getRois();
+  if (!hasShapeAndRank(rois)) {
+    return failure();
+  }
+  uint64_t roisRank = createIE->getShapedTypeRank(rois);
   if (roisRank != 2)
     return op->emitError("rois rank is expected to be 2d");
 
   // 2d tensor: (num_rois, 5)
-  IndexExpr numRois = createIE->getShapeAsDim(operandAdaptor.getRois(), 0);
+  IndexExpr numRois = createIE->getShapeAsDim(rois, 0);
   DimsExpr pooledDims;
   createIE->getIntFromArrayAsLiterals(
       operandAdaptor.getPooledShape(), pooledDims);
 
   // 4-D tensor : (num_rois, channels, pooled_shape[0], pooled_shape[1]).
   DimsExpr outputDims;
-  outputDims.push_back(LiteralIndexExpr(numRois));
+  outputDims.push_back(LitIE(numRois));
   outputDims.push_back(channel);
   outputDims.push_back(pooledDims[0]);
   outputDims.push_back(pooledDims[1]);
@@ -106,8 +110,8 @@ LogicalResult ONNXAveragePoolOp::verify() {
   // Get operands.
   auto X = operandAdaptor.getX();
   if (hasShapeAndRank(X)) {
-    auto xShape = X.getType().cast<ShapedType>().getShape();
-    if ((int64_t)xShape.size() - 2 != spatialRank)
+    auto xShape = mlir::cast<ShapedType>(X.getType()).getShape();
+    if (static_cast<int64_t>(xShape.size()) - 2 != spatialRank)
       return emitOpError("Input and kernel shape rank mismatch");
   }
 
@@ -130,7 +134,7 @@ LogicalResult ONNXAveragePoolOp::inferShapes(
   if (!hasShapeAndRank(getX()))
     return success();
 
-  Type elementType = getX().getType().cast<ShapedType>().getElementType();
+  Type elementType = mlir::cast<ShapedType>(getX().getType()).getElementType();
   ONNXAveragePoolOpShapeHelper shapeHelper(getOperation(), {});
   return shapeHelper.computeShapeAndUpdateType(elementType);
 }
@@ -144,7 +148,7 @@ LogicalResult ONNXGlobalAveragePoolOp::inferShapes(
   if (!hasShapeAndRank(getX()))
     return success();
 
-  Type elementType = getX().getType().cast<ShapedType>().getElementType();
+  Type elementType = mlir::cast<ShapedType>(getX().getType()).getElementType();
   ONNXGlobalAveragePoolOpShapeHelper shapeHelper(getOperation(), {});
   return shapeHelper.computeShapeAndUpdateType(elementType);
 }
@@ -158,7 +162,7 @@ LogicalResult ONNXGlobalLpPoolOp::inferShapes(
   if (!hasShapeAndRank(getX()))
     return success();
 
-  Type elementType = getX().getType().cast<ShapedType>().getElementType();
+  Type elementType = mlir::cast<ShapedType>(getX().getType()).getElementType();
   ONNXGlobalLpPoolOpShapeHelper shapeHelper(getOperation(), {});
   return shapeHelper.computeShapeAndUpdateType(elementType);
 }
@@ -172,7 +176,7 @@ LogicalResult ONNXGlobalMaxPoolOp::inferShapes(
   if (!hasShapeAndRank(getX()))
     return success();
 
-  Type elementType = getX().getType().cast<ShapedType>().getElementType();
+  Type elementType = mlir::cast<ShapedType>(getX().getType()).getElementType();
   ONNXGlobalMaxPoolOpShapeHelper shapeHelper(getOperation(), {});
   return shapeHelper.computeShapeAndUpdateType(elementType);
 }
@@ -214,7 +218,7 @@ LogicalResult ONNXMaxPoolSingleOutOp::verify() {
   // Get operands.
   auto X = operandAdaptor.getX();
   if (hasShapeAndRank(X)) {
-    auto xShape = X.getType().cast<ShapedType>().getShape();
+    auto xShape = mlir::cast<ShapedType>(X.getType()).getShape();
     if (static_cast<int64_t>(xShape.size()) - 2 != spatialRank)
       return emitOpError("Input and kernel shape rank mismatch");
   }
@@ -242,7 +246,7 @@ LogicalResult ONNXMaxPoolSingleOutOp::inferShapes(
   auto kernelShape = getKernelShape();
   assert(kernelShape && "verified that we had kernel shape");
 
-  Type elementType = getX().getType().cast<ShapedType>().getElementType();
+  Type elementType = mlir::cast<ShapedType>(getX().getType()).getElementType();
   IndexExprBuilderForAnalysis createIE(getLoc());
   ONNXMaxPoolSingleOutOpShapeHelper shapeHelper(getOperation(), {}, &createIE);
   return shapeHelper.computeShapeAndUpdateType(elementType);
@@ -257,7 +261,8 @@ LogicalResult ONNXMaxRoiPoolOp::inferShapes(
   if (!hasShapeAndRank(getX()) || !hasShapeAndRank(getRois()))
     return success();
 
-  Type elementType = getX().getType().cast<RankedTensorType>().getElementType();
+  Type elementType =
+      mlir::cast<RankedTensorType>(getX().getType()).getElementType();
   ONNXMaxRoiPoolOpShapeHelper shapeHelper(getOperation(), {});
   return shapeHelper.computeShapeAndUpdateType(elementType);
 }

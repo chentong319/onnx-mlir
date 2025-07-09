@@ -4,7 +4,7 @@
 
 //===-------------------- Scan.cpp - Lowering Scan Op ---------------------===//
 //
-// Copyright 2019-2023 The IBM Research Authors.
+// Copyright 2019-2024 The IBM Research Authors.
 //
 // =============================================================================
 //
@@ -145,11 +145,11 @@ struct ONNXScanOpLowering : public OpConversionPattern<ONNXScanOp> {
           resultsRange.begin(), resultsRange.end());
       for (unsigned i = 0; i < bodyOutputs.size(); i++) {
         auto output = bodyOutputs[i];
-        assert((output.getType().isa<TensorType>() ||
-                   output.getType().isa<MemRefType>()) &&
+        assert((mlir::isa<TensorType>(output.getType()) ||
+                   mlir::isa<MemRefType>(output.getType())) &&
                "Expecting scan body function output to consist of"
                "tensors/memrefs.");
-        auto outputTy = output.getType().cast<ShapedType>();
+        auto outputTy = mlir::cast<ShapedType>(output.getType());
         bodyOutputs[i] = rewriter
                              .create<UnrealizedConversionCastOp>(loc,
                                  MemRefType::get(outputTy.getShape(),
@@ -198,11 +198,11 @@ struct ONNXScanOpLowering : public OpConversionPattern<ONNXScanOp> {
     return success();
   }
 
-  static void allocateMemoryForVFinal(mlir::Location loc,
+  static void allocateMemoryForVFinal(Location loc,
       ConversionPatternRewriter &rewriter, const TypeConverter *typeConverter,
       Operation *op, ONNXScanOpAdaptor adaptor,
-      SmallVectorImpl<mlir::Value> &outputs) {
-    auto scanOp = dyn_cast<ONNXScanOp>(op);
+      SmallVectorImpl<Value> &outputs) {
+    auto scanOp = mlir::dyn_cast<ONNXScanOp>(op);
     for (const auto &ioPair :
         llvm::zip(scanOp.getVInitial(), scanOp.v_final())) {
       auto vInit = std::get<0>(ioPair);
@@ -210,9 +210,9 @@ struct ONNXScanOpLowering : public OpConversionPattern<ONNXScanOp> {
 
       // Convert vFinal's type to MemRefType.
       Type convertedType = typeConverter->convertType(vFinal.getType());
-      assert(convertedType && convertedType.isa<MemRefType>() &&
+      assert(convertedType && mlir::isa<MemRefType>(convertedType) &&
              "Failed to convert type to MemRefType");
-      MemRefType memRefType = convertedType.cast<MemRefType>();
+      MemRefType memRefType = mlir::cast<MemRefType>(convertedType);
 
       // Allocate memory for the loop-carried dependencies, since they are
       // guaranteed to have the same shape throughout all iterations, use
@@ -223,17 +223,17 @@ struct ONNXScanOpLowering : public OpConversionPattern<ONNXScanOp> {
     }
   }
 
-  static void allocateMemoryForScanOutput(mlir::Location loc,
+  static void allocateMemoryForScanOutput(Location loc,
       ConversionPatternRewriter &rewriter, const TypeConverter *typeConverter,
       Operation *op, ONNXScanOpAdaptor adaptor,
-      SmallVectorImpl<mlir::Value> &outputs) {
-    auto scanOp = dyn_cast<ONNXScanOp>(op);
+      SmallVectorImpl<Value> &outputs) {
+    auto scanOp = mlir::dyn_cast<ONNXScanOp>(op);
     for (const auto &opScanOutput : scanOp.scan_outputs()) {
       // Convert opScanOutput's type to MemRefType.
       Type convertedType = typeConverter->convertType(opScanOutput.getType());
-      assert(convertedType && convertedType.isa<MemRefType>() &&
+      assert(convertedType && mlir::isa<MemRefType>(convertedType) &&
              "Failed to convert type to MemRefType");
-      MemRefType memRefType = convertedType.cast<MemRefType>();
+      MemRefType memRefType = mlir::cast<MemRefType>(convertedType);
 
       // Allocate memory for the scan outputs. There're no good "reference"
       // shape for scan outputs. So if the scan outputs do not have constant
@@ -248,7 +248,7 @@ struct ONNXScanOpLowering : public OpConversionPattern<ONNXScanOp> {
         MemRefBuilder createMemRef(rewriter, loc);
         OnnxBuilder onnxBuilder(rewriter, loc);
         auto rankedScanOutTy = memRefType;
-        SmallVector<mlir::Value, 4> allocParams;
+        SmallVector<Value, 4> allocParams;
         for (int i = 0; i < rankedScanOutTy.getRank(); i++) {
           if (rankedScanOutTy.isDynamicDim(i)) {
             if (i == 0) {
@@ -274,14 +274,14 @@ struct ONNXScanOpLowering : public OpConversionPattern<ONNXScanOp> {
     }
   }
 
-  static mlir::Value allocateMemoryForBodyScanInput(mlir::Location loc,
+  static Value allocateMemoryForBodyScanInput(Location loc,
       ConversionPatternRewriter &rewriter, const TypeConverter *typeConverter,
-      mlir::Type bodyScanInputTy) {
+      Type bodyScanInputTy) {
     // Convert type to MemRefType.
     Type convertedType = typeConverter->convertType(bodyScanInputTy);
-    assert(convertedType && convertedType.isa<MemRefType>() &&
+    assert(convertedType && mlir::isa<MemRefType>(convertedType) &&
            "Failed to convert type to MemRefType");
-    MemRefType memRefType = convertedType.cast<MemRefType>();
+    MemRefType memRefType = mlir::cast<MemRefType>(convertedType);
 
     // Allocate memory for the scan outputs. There're no good "reference"
     // shape for scan outputs. So if the scan outputs do not have constant
@@ -311,17 +311,17 @@ struct ONNXScanOpLowering : public OpConversionPattern<ONNXScanOp> {
       std::vector<Value> writePrefix = {}) {
     OpBuilder::InsertionGuard insertGuard(builder);
 
-    auto srcTy = src.getType().cast<MemRefType>();
+    auto srcTy = mlir::cast<MemRefType>(src.getType());
     MultiDialectBuilder<KrnlBuilder, IndexExprBuilderForKrnl> create(
         builder, loc);
     if (srcTy.getRank() > 0) {
       IndexExprScope childScope(create.krnl);
       ValueRange loopDef = create.krnl.defineLoops(srcTy.getRank());
-      SmallVector<IndexExpr, 4> lbs(srcTy.getRank(), LiteralIndexExpr(0));
+      SmallVector<IndexExpr, 4> lbs(srcTy.getRank(), LitIE(0));
       SmallVector<IndexExpr, 4> ubs;
       create.krnlIE.getShapeAsDims(src, ubs);
       create.krnl.iterateIE(loopDef, loopDef, lbs, ubs,
-          [&](KrnlBuilder &createKrnl, ValueRange loopInd) {
+          [&](const KrnlBuilder &createKrnl, ValueRange loopInd) {
             SmallVector<Value, 4> writeIV(
                 writePrefix.begin(), writePrefix.end());
             writeIV.insert(writeIV.end(), loopInd.begin(), loopInd.end());
@@ -339,21 +339,21 @@ struct ONNXScanOpLowering : public OpConversionPattern<ONNXScanOp> {
       const Value &src, const Value &dest, std::vector<Value> readPrefix = {}) {
     OpBuilder::InsertionGuard insertGuard(builder);
 
-    auto srcTy = src.getType().cast<MemRefType>();
+    auto srcTy = mlir::cast<MemRefType>(src.getType());
     SmallVector<Value, 4> readIV(readPrefix.begin(), readPrefix.end());
     MultiDialectBuilder<KrnlBuilder, IndexExprBuilderForKrnl> create(
         builder, loc);
-    if ((size_t)srcTy.getRank() > readIV.size()) {
+    if (static_cast<size_t>(srcTy.getRank()) > readIV.size()) {
       IndexExprScope childScope(create.krnl);
       ValueRange loopDef =
           create.krnl.defineLoops(srcTy.getRank() - readPrefix.size());
       SmallVector<IndexExpr, 4> lbs(
-          srcTy.getRank() - readPrefix.size(), LiteralIndexExpr(0));
+          srcTy.getRank() - readPrefix.size(), LitIE(0));
       SmallVector<IndexExpr, 4> ubs;
       for (int i = readIV.size(); i < srcTy.getRank(); i++)
         ubs.emplace_back(create.krnlIE.getShapeAsDim(src, i));
       create.krnl.iterateIE(loopDef, loopDef, lbs, ubs,
-          [&](KrnlBuilder &createKrnl, ValueRange loopInd) {
+          [&](const KrnlBuilder &createKrnl, ValueRange loopInd) {
             readIV.insert(readIV.end(), loopInd.begin(), loopInd.end());
             Value val = createKrnl.load(src, readIV);
             createKrnl.store(val, dest, loopInd);

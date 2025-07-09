@@ -22,6 +22,9 @@ LogicalResult ONNXUniqueOpShapeHelper::computeShape() {
   ONNXUniqueOpAdaptor operandAdaptor(operands, op->getAttrDictionary());
   // Get info about X and K operands.
   Value X = operandAdaptor.getX();
+  if (!hasShapeAndRank(X)) {
+    return failure();
+  }
   int64_t rank = createIE->getShapedTypeRank(X);
   std::optional<int64_t> optionalAxis = operandAdaptor.getAxis();
   // Generate the output dims.
@@ -65,7 +68,7 @@ LogicalResult ONNXUniqueOp::verify() {
     return success(); // Too early to verify.
 
   // verify axis
-  int64_t XRank = X.getType().cast<ShapedType>().getRank();
+  int64_t XRank = mlir::cast<ShapedType>(X.getType()).getRank();
   std::optional<int64_t> optionalAxis = getAxis();
 
   if (optionalAxis.has_value()) {
@@ -87,7 +90,7 @@ LogicalResult ONNXUniqueOp::verify() {
 LogicalResult ONNXUniqueOp::inferShapes(
     std::function<void(Region &)> doShapeInference) {
   Builder b = Builder(getContext());
-  Type elementType = getX().getType().cast<ShapedType>().getElementType();
+  Type elementType = mlir::cast<ShapedType>(getX().getType()).getElementType();
   Type indexType = b.getI64Type();
   ONNXUniqueOpShapeHelper shapeHelper(getOperation(), {});
   return shapeHelper.computeShapeAndUpdateTypes(

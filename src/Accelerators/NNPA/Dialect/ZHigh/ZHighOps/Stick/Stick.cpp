@@ -12,6 +12,10 @@
 //===----------------------------------------------------------------------===//
 
 #include "src/Accelerators/NNPA/Dialect/ZHigh/ZHighOps/ShapeHelper.hpp"
+#include "src/Accelerators/NNPA/Support/NNPALimit.hpp"
+#include "src/Compiler/CompilerOptions.hpp"
+#include "src/Dialect/ONNX/DialectBuilder.hpp"
+#include "src/Dialect/ONNX/ONNXOps/OpHelper.hpp"
 
 using namespace mlir;
 using namespace onnx_mlir;
@@ -28,12 +32,12 @@ namespace zhigh {
 // Custom builders
 //===----------------------------------------------------------------------===//
 
-void ZHighStickOp::build(
-    OpBuilder &builder, OperationState &state, Value input, StringAttr layout) {
+void ZHighStickOp::build(OpBuilder &builder, OperationState &state, Value input,
+    StringAttr layout, IntegerAttr noSaturation) {
   Type resType = builder.getNoneType();
   Type resElementType = builder.getF16Type();
-  if (!input.getType().isa<NoneType>()) {
-    ShapedType inputType = input.getType().cast<ShapedType>();
+  if (!mlir::isa<NoneType>(input.getType())) {
+    ShapedType inputType = mlir::cast<ShapedType>(input.getType());
     int64_t rank = -1;
     if (inputType.hasRank()) {
       rank = inputType.getRank();
@@ -63,7 +67,7 @@ void ZHighStickOp::build(
       resType = UnrankedTensorType::get(resElementType);
     }
   }
-  build(builder, state, resType, input, layout);
+  build(builder, state, resType, input, layout, noSaturation);
 }
 
 //===----------------------------------------------------------------------===//
@@ -106,12 +110,12 @@ LogicalResult ZHighStickOpShapeHelper::computeShape() {
 //===----------------------------------------------------------------------===//
 
 LogicalResult ZHighStickOp::inferShapes(
-    std::function<void(mlir::Region &)> doShapeInference) {
+    std::function<void(Region &)> doShapeInference) {
   Value input = getIn();
   if (isa<NoneType>(input.getType()) || !hasRankedType(input))
     return success();
 
-  auto inputType = input.getType().cast<RankedTensorType>();
+  auto inputType = mlir::cast<RankedTensorType>(input.getType());
   StringAttr layout = getLayoutAttr();
   int64_t rank = inputType.getRank();
 
@@ -123,7 +127,8 @@ LogicalResult ZHighStickOp::inferShapes(
   auto encoding = ZTensorEncodingAttr::get(this->getContext(), dataLayout);
 
   ZHighStickOpShapeHelper shapeHelper(getOperation());
-  Type elementType = getResult().getType().cast<ShapedType>().getElementType();
+  Type elementType =
+      mlir::cast<ShapedType>(getResult().getType()).getElementType();
   return shapeHelper.computeShapeAndUpdateType(elementType, encoding);
 }
 
@@ -136,11 +141,14 @@ void ZHighStickOp::getCanonicalizationPatterns(
   results.insert<NoneTypeStickRemovalPattern>(context);
   results.insert<StickUnstickSameLayoutRemovalPattern>(context);
   results.insert<StickUnstickDiffLayoutRemovalPattern>(context);
+  results.insert<Stick3DSSqueezeUnstick4DSPattern>(context);
   results.insert<ReplaceONNXLeakyReluPattern>(context);
   results.insert<ReplaceONNXSoftplusPattern>(context);
   results.insert<ReplaceONNXReciprocalSqrtPattern>(context);
   results.insert<ReshapeTransposeReshape2DTo3DSPattern>(context);
   results.insert<ReshapeTransposeReshape3DSTo2DPattern>(context);
+  results.insert<ReshapeTransposeReshapeRoberta3DSWPattern1>(context);
+  results.insert<ReshapeTransposeReshapeRoberta3DSWPattern2>(context);
 }
 
 } // namespace zhigh

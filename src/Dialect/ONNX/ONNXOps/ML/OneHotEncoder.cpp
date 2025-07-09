@@ -29,7 +29,7 @@ LogicalResult ONNXOneHotEncoderOpShapeHelper::computeShape() {
   ONNXOneHotEncoderOp oneHotOp = llvm::cast<ONNXOneHotEncoderOp>(op);
   ONNXOneHotEncoderOpAdaptor operandAdaptor(operands);
   Value X = operandAdaptor.getX();
-  ShapedType inputType = X.getType().dyn_cast<RankedTensorType>();
+  ShapedType inputType = mlir::dyn_cast<RankedTensorType>(X.getType());
   assert(inputType && "expected ranked type");
 
   // If the input is a tensor of float, int32, or double,
@@ -46,7 +46,7 @@ LogicalResult ONNXOneHotEncoderOpShapeHelper::computeShape() {
   // total category count will determine the size of the extra dimension
   DimsExpr outputDims;
   createIE->getShapeAsDims(X, outputDims);
-  outputDims.emplace_back(LiteralIndexExpr(outDim));
+  outputDims.emplace_back(LitIE(outDim));
 
   // Save the final result.
   setOutputDims(outputDims);
@@ -65,7 +65,7 @@ LogicalResult ONNXOneHotEncoderOp::verify() {
   if (!hasShapeAndRank(input))
     return success();
 
-  auto inputType = input.getType().cast<ShapedType>();
+  auto inputType = mlir::cast<ShapedType>(input.getType());
   if (!inputType)
     return success();
 
@@ -96,7 +96,7 @@ LogicalResult ONNXOneHotEncoderOp::inferShapes(
     return success();
 
   ONNXOneHotEncoderOpShapeHelper shapeHelper(getOperation(), {});
-  return shapeHelper.computeShapeAndUpdateType(FloatType::getF32(getContext()));
+  return shapeHelper.computeShapeAndUpdateType(Float32Type::get(getContext()));
   return success();
 }
 

@@ -4,7 +4,7 @@
 
 //====----- ONNXToZHighCommon.cpp - Common functions to ZHigh lowering ----===//
 //
-// Copyright 2019-2020 The IBM Research Authors.
+// Copyright 2019-2024 The IBM Research Authors.
 //
 // =============================================================================
 //
@@ -40,11 +40,12 @@ Value emitONNXTransposeWithType(Location loc, PatternRewriter &rewriter,
 }
 
 /// Split a tensor along an axis in which each chunk has a size of
-/// NNPA_MAXIMUM_DIMENSION_INDEX_SIZE and the last chunk can be smaller.
+/// NNPAGetMaxForDim and the last chunk can be smaller.
 ValueRange splitAlongAxis(
     MultiDialectBuilder<OnnxBuilder> &create, Value X, int64_t axis) {
   Type xType = X.getType();
   ArrayRef<int64_t> xShape = getShape(xType);
+  int64_t xRank = xShape.size();
   Type elementTy = getElementType(xType);
 
   // Compute split sizes.
@@ -52,13 +53,14 @@ ValueRange splitAlongAxis(
   SmallVector<int64_t> splitSizesI64;
   SmallVector<int64_t> splitShape(xShape);
   int64_t dimSize = xShape[axis];
-  // First splits have the same size of NNPA_MAXIMUM_DIMENSION_INDEX_SIZE.
-  while (dimSize > NNPA_MAXIMUM_DIMENSION_INDEX_SIZE) {
-    splitShape[axis] = NNPA_MAXIMUM_DIMENSION_INDEX_SIZE;
+  // First splits have the same size of NNPAGetMaxForDim.
+  int64_t maxSize = NNPAGetMaxForDim(axis, xRank);
+  while (dimSize > maxSize) {
+    splitShape[axis] = maxSize;
     auto ty = RankedTensorType::get(splitShape, elementTy);
     splitTy.emplace_back(ty);
-    splitSizesI64.emplace_back(NNPA_MAXIMUM_DIMENSION_INDEX_SIZE);
-    dimSize -= NNPA_MAXIMUM_DIMENSION_INDEX_SIZE;
+    splitSizesI64.emplace_back(maxSize);
+    dimSize -= maxSize;
   }
   // The last split.
   splitShape[axis] = dimSize;
@@ -71,18 +73,17 @@ ValueRange splitAlongAxis(
   return splits;
 }
 
-bool isF32ScalarConstantTensor(mlir::Value v) {
+bool isF32ScalarConstantTensor(Value v) {
   if (!isScalarConstantTensor(v))
     return false;
-  auto t = dyn_cast<ShapedType>(v.getType());
+  auto t = mlir::dyn_cast<ShapedType>(v.getType());
   return t.getElementType().isF32();
 }
 
 FloatAttr getScalarF32AttrFromConstant(Value v) {
   if (!isF32ScalarConstantTensor(v))
     return nullptr;
-  DenseElementsAttr constElements = ElementsAttrBuilder::toDenseElementsAttr(
-      getElementAttributeFromONNXValue(v));
+  ElementsAttr constElements = getElementAttributeFromONNXValue(v);
   return constElements.getSplatValue<FloatAttr>();
 }
 
@@ -91,7 +92,7 @@ Value getDynShape(Location loc, PatternRewriter &rewriter, Value x) {
     llvm_unreachable("The input must have shape and rank");
 
   OnnxBuilder create(rewriter, loc);
-  auto t = dyn_cast<ShapedType>(x.getType());
+  auto t = mlir::dyn_cast<ShapedType>(x.getType());
   int64_t r = t.getRank();
   SmallVector<Value> dims;
   for (int64_t i = 0; i < r; ++i) {
@@ -102,13 +103,30 @@ Value getDynShape(Location loc, PatternRewriter &rewriter, Value x) {
       RankedTensorType::get({r}, rewriter.getI64Type()), dims, 0);
 }
 
-int OnnxToZHighLoweringConfiguration::optReportNNPAUnsupportedOps =
+int ONNXToZHighLoweringConfiguration::optReportNNPAUnsupportedOps =
     0; // 0: Compile option (--opt-report=NNPAUnsupportedOps) not specified.
-int OnnxToZHighLoweringConfiguration::reportOnNNPAUnsupportedOps =
+int ONNXToZHighLoweringConfiguration::reportOnNNPAUnsupportedOps =
     0; // 0: no reporting.
-void configureOnnxToZHighLoweringPass(bool optReportNNPAUnsupportedOps) {
-  OnnxToZHighLoweringConfiguration::optReportNNPAUnsupportedOps =
+bool ONNXToZHighLoweringConfiguration::isDynQuant = false;
+bool ONNXToZHighLoweringConfiguration::Quant::isActivationSym = false;
+bool ONNXToZHighLoweringConfiguration::Quant::isWeightSym = true;
+llvm::SmallVector<std::string>
+    ONNXToZHighLoweringConfiguration::Quant::opTypes = {};
+
+void configureONNXToZHighLoweringPass(bool optReportNNPAUnsupportedOps,
+    bool isDynQuant, bool quantIsActivationSym, bool quantIsWeightSym,
+    llvm::ArrayRef<std::string> quantOpTypes) {
+  ONNXToZHighLoweringConfiguration::optReportNNPAUnsupportedOps =
       optReportNNPAUnsupportedOps;
+  ONNXToZHighLoweringConfiguration::isDynQuant = isDynQuant;
+  if (isDynQuant) {
+    ONNXToZHighLoweringConfiguration::Quant::isActivationSym =
+        quantIsActivationSym;
+    ONNXToZHighLoweringConfiguration::Quant::isWeightSym = quantIsWeightSym;
+    ONNXToZHighLoweringConfiguration::Quant::opTypes.insert(
+        ONNXToZHighLoweringConfiguration::Quant::opTypes.begin(),
+        quantOpTypes.begin(), quantOpTypes.end());
+  }
 }
 
 } // namespace onnx_mlir

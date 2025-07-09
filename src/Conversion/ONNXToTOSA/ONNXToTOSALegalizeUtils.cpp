@@ -14,6 +14,7 @@
 //
 //===----------------------------------------------------------------------===//
 
+#include "mlir/Dialect/Tosa/Utils/ConversionUtils.h"
 #include "mlir/Dialect/Tosa/Utils/QuantUtils.h"
 #include "mlir/Dialect/Tosa/Utils/ShapeUtils.h" // from @llvm-project
 #include "mlir/IR/BuiltinAttributes.h"          // from @llvm-project
@@ -35,20 +36,20 @@ using namespace mlir;
 namespace onnx_mlir {
 namespace tosa {
 
-mlir::RankedTensorType reduceAxisToOne(llvm::ArrayRef<int64_t> shape,
-    mlir::Type elementType, mlir::Attribute encoding) {
+mlir::RankedTensorType reduceAxisToOne(
+    llvm::ArrayRef<int64_t> shape, Type elementType, Attribute encoding) {
   return mlir::RankedTensorType::get(
       llvm::SmallVector<int64_t, 4>(shape.size(), 1), elementType, encoding);
 }
 
-mlir::Value buildOnnxToTosaPaddingConstOp(mlir::PatternRewriter &rewriter,
-    llvm::ArrayRef<int64_t> onnxPads, mlir::Location loc,
+Value buildOnnxToTosaPaddingConstOp(mlir::PatternRewriter &rewriter,
+    llvm::ArrayRef<int64_t> onnxPads, Location loc,
     const std::initializer_list<int64_t> &initialVals,
     const std::initializer_list<int64_t> &lastVals) {
 
   // Create a new pad vec in the right format
   // ONNX : [b1, b2, b3, b4, e1, e2, e3, e4]
-  // TOSA :[[b1, e1], [b2, e2], [b3, e3], [b4, e4]]
+  // TOSA :[b1, e1, b2, e2, b3, e3, b4, e4]
 
   // Adds any initial or last vals, not included in onnxPads.
   llvm::SmallVector<int64_t, 8> tosaPads{initialVals};
@@ -59,11 +60,9 @@ mlir::Value buildOnnxToTosaPaddingConstOp(mlir::PatternRewriter &rewriter,
     tosaPads.push_back(onnxPads[i + dimSize]);
   }
   tosaPads.insert(tosaPads.end(), lastVals.begin(), lastVals.end());
-
-  // TOSA format groups dimensions by 2.
-  const unsigned int numberOfDims = tosaPads.size() / 2;
   TosaBuilder tosaBuilder(rewriter, loc);
-  return tosaBuilder.getConst(tosaPads, {numberOfDims, 2});
+
+  return mlir::tosa::getTosaConstShape(rewriter, loc, tosaPads);
 }
 
 } // namespace tosa

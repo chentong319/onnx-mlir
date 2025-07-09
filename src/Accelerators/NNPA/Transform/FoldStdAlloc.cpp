@@ -1,6 +1,6 @@
 //===-------- FoldStdAlloc.cpp - Fold std.alloc ---------------------------===//
 //
-// Copyright 2019-2020 The IBM Research Authors.
+// Copyright 2019-2024 The IBM Research Authors.
 //
 // =============================================================================
 //
@@ -50,8 +50,8 @@ static int constantFoldStdAllocID = 0;
 
 /// Get a constant value from a ConstantOp.
 static int64_t getConstantValue(arith::ConstantOp constOp) {
-  if (IntegerAttr attr = constOp.getValue().dyn_cast<IntegerAttr>()) {
-    int64_t val = attr.cast<IntegerAttr>().getInt();
+  if (IntegerAttr attr = mlir::dyn_cast<IntegerAttr>(constOp.getValue())) {
+    int64_t val = mlir::cast<IntegerAttr>(attr).getInt();
     return val;
   } else {
     llvm_unreachable("Only support IntegerAttr");
@@ -69,7 +69,7 @@ public:
     Location loc = allocOp.getLoc();
 
     Value memRef = allocOp.getResult();
-    MemRefType memRefType = memRef.getType().dyn_cast<MemRefType>();
+    MemRefType memRefType = mlir::dyn_cast<MemRefType>(memRef.getType());
     Type elementType = memRefType.getElementType();
 
     // 1. Match
@@ -150,9 +150,9 @@ public:
 
     // There must be exactly N stores to N different locations, where N is the
     // number of elements.
-    if ((int)storeOps.size() != numElements)
+    if (static_cast<int>(storeOps.size()) != numElements)
       return failure();
-    if ((int)indexToValueMap.size() != numElements)
+    if (static_cast<int>(indexToValueMap.size()) != numElements)
       return failure();
 
     // 2. Rewrite.
@@ -211,7 +211,7 @@ public:
     RewritePatternSet patterns(&getContext());
     patterns.insert<FoldStdAlloc>(&getContext());
 
-    (void)applyPatternsAndFoldGreedily(function, std::move(patterns));
+    static_cast<void>(applyPatternsGreedily(function, std::move(patterns)));
   }
 };
 

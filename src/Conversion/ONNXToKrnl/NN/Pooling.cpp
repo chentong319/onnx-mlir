@@ -4,7 +4,7 @@
 
 //===---------------- Pooling.cpp - Lowering Pooling Ops ------------------===//
 //
-// Copyright 2019-2023 The IBM Research Authors.
+// Copyright 2019-2024 The IBM Research Authors.
 //
 // =============================================================================
 //
@@ -48,8 +48,7 @@ Value emitScalarOpFor<ONNXMaxPoolSingleOutOp>(
   Value lhs = scalarOperands[0];
   Value rhs = scalarOperands[1];
   MultiDialectBuilder<MathBuilder> create(rewriter, loc);
-  Value max = create.math.sgt(lhs, rhs);
-  return create.math.select(max, lhs, rhs);
+  return create.math.max(lhs, rhs);
 }
 
 //===----------------------------------------------------------------------===//
@@ -61,7 +60,7 @@ std::vector<int64_t> getDilations(PoolOp poolOp) {
   ArrayAttr dilationsAttribute = poolOp.getDilationsAttr();
   bool isDefaultDilations = true;
   for (auto dilation : dilationsAttribute.getValue()) {
-    int64_t dilationValue = dilation.cast<IntegerAttr>().getInt();
+    int64_t dilationValue = mlir::cast<IntegerAttr>(dilation).getInt();
     if (dilationValue > 1 && isDefaultDilations)
       isDefaultDilations = false;
     dilations.emplace_back(dilationValue);
@@ -154,7 +153,7 @@ void postProcessPoolingWindow<ONNXAveragePoolOp>(
   Value numerator = create.krnl.load(alloc, resultIndices);
   Value denominator;
   if (countIncludePad) {
-    IndexExpr kernelSize = LiteralIndexExpr(1);
+    IndexExpr kernelSize = LitIE(1);
     for (unsigned int i = 0; i < kernelShape.size(); ++i)
       kernelSize = kernelSize * kernelShape[i];
     denominator = kernelSize.getValue();
@@ -205,14 +204,14 @@ struct ONNXPoolOpLowering : public OpConversionPattern<PoolOp> {
 
     // Type information about the input and result of this operation.
     Value inputOperand = adaptor.getX();
-    auto inputShape = inputOperand.getType().cast<MemRefType>().getShape();
+    auto inputShape = mlir::cast<MemRefType>(inputOperand.getType()).getShape();
 
     // Convert the output type to MemRefType.
     Type convertedType =
         this->typeConverter->convertType(*op->result_type_begin());
-    assert(convertedType && convertedType.isa<MemRefType>() &&
+    assert(convertedType && mlir::isa<MemRefType>(convertedType) &&
            "Failed to convert type to MemRefType");
-    MemRefType memRefType = convertedType.cast<MemRefType>();
+    MemRefType memRefType = mlir::cast<MemRefType>(convertedType);
     ArrayRef<int64_t> outputShape = memRefType.getShape();
     Type outputElementType = memRefType.getElementType();
 
@@ -311,7 +310,7 @@ struct ONNXPoolOpLowering : public OpConversionPattern<PoolOp> {
     // Identity value of the operation.
     auto identity = getIdentityValue<PoolOp>(rewriter, loc, outputElementType);
     // Create a local reduction value for output[n][c][ho][wo].
-    // Single scalar, no need for default alignment.
+    // Single scalar, no need for default alignment. Ok to use alloca.
     Value reductionVal =
         create.mem.alloca(MemRefType::get({}, memRefType.getElementType()));
 
@@ -321,11 +320,11 @@ struct ONNXPoolOpLowering : public OpConversionPattern<PoolOp> {
     //     for ho in range(HO):
     //       for wo in range(WO):
     ValueRange calcLoopDef = create.krnl.defineLoops(outputShape.size());
-    SmallVector<IndexExpr, 4> lbs(outputShape.size(), LiteralIndexExpr(0));
+    SmallVector<IndexExpr, 4> lbs(outputShape.size(), LitIE(0));
     SmallVector<IndexExpr, 4> ubs;
     create.krnlIE.getShapeAsDims(alloc, ubs);
     create.krnl.iterateIE(calcLoopDef, calcLoopDef, lbs, ubs,
-        [&](KrnlBuilder &createKrnl, ValueRange loopInd) {
+        [&](const KrnlBuilder &createKrnl, ValueRange loopInd) {
           MultiDialectBuilder<KrnlBuilder, IndexExprBuilderForKrnl,
               MemRefBuilder, MathBuilder>
               create(createKrnl);
@@ -335,7 +334,7 @@ struct ONNXPoolOpLowering : public OpConversionPattern<PoolOp> {
           // pixel.
           SmallVector<IndexExpr, 4> outputIndices;
           for (unsigned int i = 0; i < outputShape.size(); ++i)
-            outputIndices.emplace_back(DimIndexExpr(loopInd[i]));
+            outputIndices.emplace_back(DimIE(loopInd[i]));
 
           // 2.1 Emit: output[n][c][ho][wo] = identity
           create.krnl.store(identity, reductionVal);
@@ -360,13 +359,13 @@ struct ONNXPoolOpLowering : public OpConversionPattern<PoolOp> {
             // s0, input dim
             ic.emplace_back(create.krnlIE.getShapeAsDim(inputOperand, j));
             // s1, kernel dim
-            ic.emplace_back(SymbolIndexExpr(shapeHelper.kernelShape[i]));
+            ic.emplace_back(SymIE(shapeHelper.kernelShape[i]));
             // s2, pad dim
-            ic.emplace_back(SymbolIndexExpr(shapeHelper.pads[i]));
+            ic.emplace_back(SymIE(shapeHelper.pads[i]));
             // s3, stride dim
-            ic.emplace_back(LiteralIndexExpr(shapeHelper.strides[i]));
+            ic.emplace_back(LitIE(shapeHelper.strides[i]));
             // s4, dilation dim
-            ic.emplace_back(LiteralIndexExpr(shapeHelper.dilations[i]));
+            ic.emplace_back(LitIE(shapeHelper.dilations[i]));
             IVExprs.emplace_back(ic);
           }
 
@@ -446,7 +445,8 @@ struct ONNXPoolOpLowering : public OpConversionPattern<PoolOp> {
             { // Construct inputIndices
               for (int i = 0; i < kernelOffset; ++i)
                 inputIndices.emplace_back(outputIndices[i]);
-              for (int i = kernelOffset; i < (int)inputShape.size(); ++i) {
+              for (int i = kernelOffset;
+                   i < static_cast<int>(inputShape.size()); ++i) {
                 int j = i - kernelOffset;
                 DimIndexExpr hp(poolingLoopInd[j]);
                 IndexExpr startH = windowStartExprs[j];

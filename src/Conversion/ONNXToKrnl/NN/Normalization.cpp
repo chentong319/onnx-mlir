@@ -4,7 +4,7 @@
 
 //===----------- Normalization.cpp - Lowering Normalization Ops -----------===//
 //
-// Copyright 2019-2023 The IBM Research Authors.
+// Copyright 2019-2024 The IBM Research Authors.
 //
 // =============================================================================
 //
@@ -48,9 +48,9 @@ struct ONNXBatchNormalizationInferenceModeOpLowering
 
     // Convert the output type to MemRefType.
     Type convertedType = typeConverter->convertType(*op->result_type_begin());
-    assert(convertedType && convertedType.isa<MemRefType>() &&
+    assert(convertedType && mlir::isa<MemRefType>(convertedType) &&
            "Failed to convert type to MemRefType");
-    MemRefType memRefType = convertedType.cast<MemRefType>();
+    MemRefType memRefType = mlir::cast<MemRefType>(convertedType);
 
     Value epsilon = create.math.constant(
         memRefType.getElementType(), adaptor.getEpsilon().convertToDouble());
@@ -170,9 +170,9 @@ struct ONNXInstanceNormalizationOpLowering
 
     // Convert the output type to MemRefType.
     Type convertedType = typeConverter->convertType(*op->result_type_begin());
-    assert(convertedType && convertedType.isa<MemRefType>() &&
+    assert(convertedType && mlir::isa<MemRefType>(convertedType) &&
            "Failed to convert type to MemRefType");
-    MemRefType memRefType = convertedType.cast<MemRefType>();
+    MemRefType memRefType = mlir::cast<MemRefType>(convertedType);
     Type elementType = memRefType.getElementType();
     Value epsilon = create.math.constant(
         elementType, adaptor.getEpsilon().convertToDouble());
@@ -193,6 +193,7 @@ struct ONNXInstanceNormalizationOpLowering
     create.krnlIE.getShapeAsSymbols(inputMemRef, inputBounds);
     MemRefType tmpType = MemRefType::get({}, elementType);
     Value fZero = create.math.constant(elementType, 0);
+    // Ok to use alloca, just one scalar.
     Value tmpMemRef = create.mem.alloca(tmpType);
 
     // Compute the number of values in a single channel: product of spatial
@@ -208,7 +209,7 @@ struct ONNXInstanceNormalizationOpLowering
     ValueRange n_c_loopDef = create.krnl.defineLoops(2);
     create.krnl.iterateIE(n_c_loopDef, n_c_loopDef, {iZero, iZero},
         {inputBounds[0], inputBounds[1]},
-        [&](KrnlBuilder &ck, ValueRange n_c_loopInd) {
+        [&](const KrnlBuilder &ck, ValueRange n_c_loopInd) {
           MultiDialectBuilder<KrnlBuilder, MemRefBuilder, MathBuilder> create(
               ck);
           IndexExprScope channelScope(ck);
@@ -219,16 +220,16 @@ struct ONNXInstanceNormalizationOpLowering
           SmallVector<IndexExpr, 4> lbs(rank - 2, iZero);
           SmallVector<IndexExpr, 4> ubs;
           for (int d = 2; d < rank; ++d)
-            ubs.emplace_back(SymbolIndexExpr(inputBounds[d]));
+            ubs.emplace_back(SymIE(inputBounds[d]));
 
           // First compute the mean: store zero in reduction value, then sum up
           // all of the values in the channel, and divide by the number of
           // values.
-          create.krnl.store(fZero, tmpMemRef, {});
+          create.krnl.store(fZero, tmpMemRef);
           // Iterate over kernel and add values.
           ValueRange spatial2_loopDef = create.krnl.defineLoops(rank - 2);
           create.krnl.iterateIE(spatial2_loopDef, spatial2_loopDef, lbs, ubs,
-              [&](KrnlBuilder &createKrnl, ValueRange spatial_loopInd) {
+              [&](const KrnlBuilder &createKrnl, ValueRange spatial_loopInd) {
                 MultiDialectBuilder<KrnlBuilder, MathBuilder> create(
                     createKrnl);
                 SmallVector<Value, 6> inputAccessFct = {
@@ -236,7 +237,7 @@ struct ONNXInstanceNormalizationOpLowering
                 for (int d = 0; d < rank - 2; ++d)
                   inputAccessFct.emplace_back(spatial_loopInd[d]);
                 // tmp += input[n,c, spatial dims]
-                Value oldSum = create.krnl.load(tmpMemRef, {});
+                Value oldSum = create.krnl.load(tmpMemRef);
                 Value val = create.krnl.load(inputMemRef, inputAccessFct);
                 Value newSum = create.math.add(oldSum, val);
                 create.krnl.store(newSum, tmpMemRef);
@@ -244,10 +245,10 @@ struct ONNXInstanceNormalizationOpLowering
           Value sum = create.krnl.load(tmpMemRef);
           Value mean = create.math.div(sum, meanDenom);
           // Second, compute the standard dev: sum of (val - mean)2 / (num-1).
-          create.krnl.store(fZero, tmpMemRef, {});
+          create.krnl.store(fZero, tmpMemRef);
           // Iterate over kernel and add values.
           create.krnl.iterateIE(spatial_loopDef, spatial_loopDef, lbs, ubs,
-              [&](KrnlBuilder &createKrnl, ValueRange spatial_loopInd) {
+              [&](const KrnlBuilder &createKrnl, ValueRange spatial_loopInd) {
                 MultiDialectBuilder<KrnlBuilder, MathBuilder> create(
                     createKrnl);
                 SmallVector<Value, 6> inputAccessFct = {
@@ -255,7 +256,7 @@ struct ONNXInstanceNormalizationOpLowering
                 for (int d = 0; d < rank - 2; ++d)
                   inputAccessFct.emplace_back(spatial_loopInd[d]);
                 // tmp += input[n,c, spatial dims]
-                Value oldSum = create.krnl.load(tmpMemRef, {});
+                Value oldSum = create.krnl.load(tmpMemRef);
                 Value val = create.krnl.load(inputMemRef, inputAccessFct);
                 val = create.math.sub(val, mean);
                 val = create.math.mul(val, val);
@@ -278,7 +279,7 @@ struct ONNXInstanceNormalizationOpLowering
           // + term.
           ValueRange spatial3_loopDef = create.krnl.defineLoops(rank - 2);
           create.krnl.iterateIE(spatial3_loopDef, spatial3_loopDef, lbs, ubs,
-              [&](KrnlBuilder &createKrnl, ValueRange spatial_loopInd) {
+              [&](const KrnlBuilder &createKrnl, ValueRange spatial_loopInd) {
                 MultiDialectBuilder<KrnlBuilder, MathBuilder> create(
                     createKrnl);
                 SmallVector<Value, 6> accessFct = {n.getValue(), c.getValue()};
@@ -343,7 +344,7 @@ LogicalResult generateGenericLayerNormOpONNXCode(
     const TypeConverter *const typeConverter) {
   MDBuilder create(rewriter, loc);
   Value X = lnOp.getX(); // Original value, not translated.
-  TensorType XType = X.getType().cast<TensorType>();
+  TensorType XType = mlir::cast<TensorType>(X.getType());
   Type elementType = XType.getElementType();
   int64_t XRank = XType.getRank();
   int64_t axis = getAxisInRange(lnOp.getAxis(), XRank);
@@ -464,8 +465,8 @@ struct GenericLayerNormaOpLowering : public OpConversionPattern<OP_TYPE> {
       Value operand, int64_t operandIndex, int64_t axis, int64_t XRank,
       IndexExpr &modFactor) const {
     DimsExpr &operandDims = shapeHelper.inputsDims[operandIndex];
-    int64_t operandRank = operand.getType().cast<MemRefType>().getRank();
-    modFactor = LiteralIndexExpr(1);
+    int64_t operandRank = mlir::cast<MemRefType>(operand.getType()).getRank();
+    modFactor = LitIE(1);
 
     // X:     X0  X1  X2 | X3  X4  X5  .
     //        ^          | ^           ^
@@ -581,12 +582,12 @@ struct GenericLayerNormaOpLowering : public OpConversionPattern<OP_TYPE> {
     llvm_unreachable("unexpected case");
   }
 
-  bool isSimdizable(MDBuilder &create, OP_TYPE lnOp, ADAPTOR_TYPE adaptor,
-      SHAPE_HELPER_TYPE &shapeHelper, int64_t &VL,
+  bool isSimdizable(OP_TYPE lnOp, ADAPTOR_TYPE adaptor,
+      SHAPE_HELPER_TYPE &shapeHelper, int64_t &totVL,
       BroadcastKind &scaleBroadcastKind, BroadcastKind &biasBroadcastKind,
       IndexExpr &scaleModFactor, IndexExpr &biasModFactor) const {
 
-    VL = 0;
+    totVL = 1;
     Operation *op = lnOp.getOperation();
     if (!enableSIMD) {
       onnxToKrnlSimdReport(
@@ -596,14 +597,12 @@ struct GenericLayerNormaOpLowering : public OpConversionPattern<OP_TYPE> {
 
     // Get info.
     Value X = adaptor.getX();
-    MemRefType XMemRefType = X.getType().cast<MemRefType>();
+    MemRefType XMemRefType = mlir::cast<MemRefType>(X.getType());
     DimsExpr XDims = shapeHelper.inputsDims[0];
     int64_t XRank = XMemRefType.getRank();
     int64_t axis = getAxisInRange(lnOp.getAxis(), XRank);
     int64_t lowRank = XRank - axis;
     // Detect if we can use SIMD based on inout/X output/Y shape.
-    VectorMachineSupport *vms =
-        VectorMachineSupport::getGlobalVectorMachineSupport();
 
     // Implementation relies into splitting the input X into a 2D vector, with
     // outer dim is batches, and inner dims is where the mean/stddev is
@@ -617,21 +616,14 @@ struct GenericLayerNormaOpLowering : public OpConversionPattern<OP_TYPE> {
       return false;
     }
 
-    // Do not want to disable SIMD for lack of sum across support at this
-    // stage. Type elementType = XMemRefType.getElementType();
-    //
-    // if (vms->getVectorLength(GenericOps::SumAcrossGop, elementType) <= 0) {
-    //   LLVM_DEBUG(llvm::dbgs() << "  SIMD: unsupported sum across, fail\n");
-    //   return false;
-    // }
-
+    // TODO: Use old scheme here, maybe update to new scheme.
     int64_t simdLoopStaticTripCount;
-    VL = create.vec.computeSuitableUnrollFactor(vms, XMemRefType, XDims,
-        lowRank, 4, /*canPad*/ false, simdLoopStaticTripCount);
+    totVL = computeSuitableSimdUnrollFactor(XMemRefType, lowRank, 4,
+        /*canOverCompute*/ false, simdLoopStaticTripCount);
     LLVM_DEBUG(llvm::dbgs()
                    << "  SIMD: LayerNormalization " << simdLoopStaticTripCount
-                   << " loops, VL " << VL << "\n";);
-    if (VL == 0) {
+                   << " loops, totVL " << totVL << "\n";);
+    if (totVL <= 1) {
       onnxToKrnlSimdReport(op, /*successful*/ false, 0, simdLoopStaticTripCount,
           "no simd because could not find beneficial VL");
       return false;
@@ -658,7 +650,7 @@ struct GenericLayerNormaOpLowering : public OpConversionPattern<OP_TYPE> {
       }
     }
     onnxToKrnlSimdReport(
-        op, /*successful*/ true, VL, simdLoopStaticTripCount, "successful");
+        op, /*successful*/ true, totVL, simdLoopStaticTripCount, "successful");
     return true;
   }
 
@@ -673,15 +665,16 @@ struct GenericLayerNormaOpLowering : public OpConversionPattern<OP_TYPE> {
     SHAPE_HELPER_TYPE shapeHelper(op, operands, &create.krnlIE);
     shapeHelper.computeShapeAndAssertOnFailure();
 
-    int64_t VL;
+    int64_t totVL;
     BroadcastKind scaleBroadcastKind, biasBroadcastKind;
     IndexExpr scaleModFactor, biasModFactor;
-    bool isSIMD = isSimdizable(create, lnOp, adaptor, shapeHelper, VL,
+    bool isSIMD = isSimdizable(lnOp, adaptor, shapeHelper, totVL,
         scaleBroadcastKind, biasBroadcastKind, scaleModFactor, biasModFactor);
 
     if (isSIMD) {
-      return generateSIMDCode(rewriter, loc, lnOp, adaptor, shapeHelper, 4, VL,
-          scaleBroadcastKind, biasBroadcastKind, scaleModFactor, biasModFactor);
+      return generateSIMDCode(rewriter, loc, lnOp, adaptor, shapeHelper, 4,
+          totVL, scaleBroadcastKind, biasBroadcastKind, scaleModFactor,
+          biasModFactor);
     }
     return generateGenericLayerNormOpONNXCode(
         rewriter, loc, lnOp, this->typeConverter);
@@ -701,9 +694,9 @@ struct GenericLayerNormaOpLowering : public OpConversionPattern<OP_TYPE> {
       /*output*/ Value &flatMemRef) const {
     // Convert input.
     Type convertedType = this->typeConverter->convertType(inputVal.getType());
-    assert(convertedType && convertedType.isa<MemRefType>() &&
+    assert(convertedType && mlir::isa<MemRefType>(convertedType) &&
            "Failed to convert type to MemRefType");
-    MemRefType memRefType = convertedType.cast<MemRefType>();
+    MemRefType memRefType = mlir::cast<MemRefType>(convertedType);
     // Allocate.
     memRef = create.mem.alignedAlloc(memRefType, inputDims);
     // Flatten (do not keep flatten dims at this time).
@@ -759,17 +752,18 @@ struct GenericLayerNormaOpLowering : public OpConversionPattern<OP_TYPE> {
       /* temps [B][vec] */ Value redMemRef, Value redMemRef2,
       /* index expr param */ IndexExpr redDim,
       /* value params */ Value i, Value epsilon,
-      /* int params */ int64_t B, int64_t VL, BroadcastKind scaleBroadcastKind,
-      BroadcastKind biasBroadcastKind, IndexExpr scaleModFactor,
-      IndexExpr biasModFactor) const {
+      /* int params */ int64_t B, int64_t totVL,
+      BroadcastKind scaleBroadcastKind, BroadcastKind biasBroadcastKind,
+      IndexExpr scaleModFactor, IndexExpr biasModFactor) const {
     // Bool isTraditionalLayerNorm is true when computing traditional layer
     // norm, not the faster RMS version.
     bool isTraditionalLayerNorm = false;
     if constexpr (std::is_same<OP_TYPE, ONNXLayerNormalizationOp>::value)
       isTraditionalLayerNorm = true;
     // Vector type.
-    Type elementType = YMemRef.getType().cast<ShapedType>().getElementType();
-    VectorType vecType = VectorType::get({VL}, elementType);
+    Type elementType =
+        mlir::cast<ShapedType>(YMemRef.getType()).getElementType();
+    VectorType vecType = VectorType::get({totVL}, elementType);
     // Init the two reductions.
     Value init = create.math.constant(elementType, 0.0);
     Value initVec = create.vec.splat(vecType, init);
@@ -780,10 +774,11 @@ struct GenericLayerNormaOpLowering : public OpConversionPattern<OP_TYPE> {
       create.vec.store(initVec, redMemRef2, {o, zero});
     });
     // Perform reduction of entire vectors.
-    IndexExpr izero = LiteralIndexExpr(0);
-    create.affineKMem.forIE(izero, redDim, VL,
-        [&](onnx_mlir::AffineBuilderKrnlMem &ck, mlir::Value j) {
+    IndexExpr izero = LitIE(0);
+    create.affineKMem.forLoopIE(izero, redDim, totVL,
+        [&](const onnx_mlir::AffineBuilderKrnlMem &ck, ValueRange loopInd) {
           MDBuilder create(ck);
+          Value j = loopInd[0];
           // load X, compute X**2, sum into reductions.
           inlineFor(create, B, [&](int64_t d, Value o) {
             Value ii = create.math.add(i, o);
@@ -835,9 +830,10 @@ struct GenericLayerNormaOpLowering : public OpConversionPattern<OP_TYPE> {
       invStdDev[d] = create.math.div(oneFloat, stdDev);
     });
     // Normalize of entire vectors.
-    create.affineKMem.forIE(izero, redDim, VL,
-        [&](onnx_mlir::AffineBuilderKrnlMem &ck, mlir::Value j) {
+    create.affineKMem.forLoopIE(izero, redDim, totVL,
+        [&](const onnx_mlir::AffineBuilderKrnlMem &ck, ValueRange loopInd) {
           MDBuilder create(ck);
+          Value j = loopInd[0];
           // load X, compute X**2, sum into reductions.
           inlineFor(create, B, [&](int64_t d, Value o) {
             Value ii = create.math.add(i, o);
@@ -882,14 +878,14 @@ struct GenericLayerNormaOpLowering : public OpConversionPattern<OP_TYPE> {
 
   LogicalResult generateSIMDCode(ConversionPatternRewriter &rewriter,
       Location loc, OP_TYPE lnOp, ADAPTOR_TYPE &adaptor,
-      SHAPE_HELPER_TYPE &shapeHelper, int64_t B, int64_t VL,
+      SHAPE_HELPER_TYPE &shapeHelper, int64_t B, int64_t totVL,
       BroadcastKind scaleBroadcastKind, BroadcastKind biasBroadcastKind,
       IndexExpr scaleModFactor, IndexExpr biasModFactor) const {
 
     MDBuilder create(rewriter, loc);
     Operation *op = lnOp.getOperation();
     Value XMemRef = adaptor.getX();
-    MemRefType XMemRefType = XMemRef.getType().cast<MemRefType>();
+    MemRefType XMemRefType = mlir::cast<MemRefType>(XMemRef.getType());
     Type elementType = XMemRefType.getElementType();
     int64_t XRank = XMemRefType.getRank();
     int64_t axis = getAxisInRange(lnOp.getAxis(), XRank);
@@ -906,7 +902,7 @@ struct GenericLayerNormaOpLowering : public OpConversionPattern<OP_TYPE> {
 
     // Fully flatten scale input.
     int64_t scaleRank =
-        adaptor.getScale().getType().template cast<MemRefType>().getRank();
+        mlir::cast<MemRefType>(adaptor.getScale().getType()).getRank();
     DimsExpr scaleDims;
     for (int64_t i = XRank - scaleRank; i < XRank; ++i)
       scaleDims.emplace_back(shapeHelper.inputsDims[1][i]);
@@ -919,7 +915,7 @@ struct GenericLayerNormaOpLowering : public OpConversionPattern<OP_TYPE> {
     // Fully flatten bias input, if present.
     if (!isNoneValue(lnOp.getB())) {
       int64_t biasRank =
-          adaptor.getB().getType().template cast<MemRefType>().getRank();
+          mlir::cast<MemRefType>(adaptor.getB().getType()).getRank();
       DimsExpr biasDims;
       for (int64_t i = XRank - biasRank; i < XRank; ++i)
         biasDims.emplace_back(shapeHelper.inputsDims[2][i]);
@@ -945,56 +941,71 @@ struct GenericLayerNormaOpLowering : public OpConversionPattern<OP_TYPE> {
           shapeHelper.getOutputDims(2), axis, invStdDevMemRef,
           invStdDevFlatMemRef);
     // Alloc mem for reductions (should be private if parallel)
-    MemRefType tmpRedType = MemRefType::get({B, VL}, elementType);
-    // Iterate over 1st dim by block
-    ValueRange loopDefs = create.krnl.defineLoops(1);
-    IndexExpr zero = LiteralIndexExpr(0);
-    ValueRange blockedLoopDefs = create.krnl.block(loopDefs[0], B);
-    Value blockedLoopDef = blockedLoopDefs[0];
+    MemRefType tmpRedType = MemRefType::get({B, totVL}, elementType);
+    // Iterate over 1st dim by block B.
+    bool useParallel = false;
     if (enableParallel) {
-      create.krnl.parallel(blockedLoopDef);
-      onnxToKrnlParallelReport(op, true, 0, zero, XFlatDims[0], "layer-norm");
+      int64_t parId;
+      SmallVector<IndexExpr, 1> lb(1, LitIE(0)), ub(1, XFlatDims[0]);
+      if (findSuitableParallelDimension(lb, ub, 0, 1, parId,
+              /*min iter for going parallel*/ 4)) {
+        useParallel = true;
+        onnxToKrnlParallelReport(op, true, 0, lb[0], ub[0], "in layer-norm");
+      } else {
+        onnxToKrnlParallelReport(
+            op, false, 0, lb[0], ub[0], "not enough work in layer-norm");
+      }
     } else {
-      onnxToKrnlParallelReport(op, false, -1, -1, "layer norm");
+      onnxToKrnlParallelReport(op, false, -1, -1, "no parallel in layer norm");
     }
-    create.krnl.iterateIE({loopDefs[0]}, {blockedLoopDef}, {zero},
-        {XFlatDims[0]}, [&](KrnlBuilder &ck, ValueRange blockedLoopIndices) {
+    Value tmpRedMemRef, tmpRedMemRef2;
+    if (!useParallel) {
+      // Sequential, alloc before loop.
+      tmpRedMemRef = create.mem.alignedAlloc(tmpRedType);
+      tmpRedMemRef2 = create.mem.alignedAlloc(tmpRedType);
+    }
+    create.krnl.forLoopIE(LitIE(0), XFlatDims[0], /*step*/ B, useParallel,
+        [&](const KrnlBuilder &ck, ValueRange blockedLoopIndices) {
           MDBuilder create(ck);
           IndexExprScope innerScope(ck);
-          Value tmpRedMemRef = create.mem.alignedAlloca(tmpRedType);
-          Value tmpRedMemRef2 = create.mem.alignedAlloca(tmpRedType);
-          IndexExpr blockedCurrIndex = DimIndexExpr(blockedLoopIndices[0]);
-          IndexExpr blockedUB = SymbolIndexExpr(XFlatDims[0]);
-          IndexExpr isFull = create.krnlIE.isTileFull(
-              blockedCurrIndex, LiteralIndexExpr(B), blockedUB);
+          if (useParallel) {
+            // Parallel, alloc inside parallel loop.
+            tmpRedMemRef = create.mem.alignedAlloc(tmpRedType);
+            tmpRedMemRef2 = create.mem.alignedAlloc(tmpRedType);
+          }
+          IndexExpr blockedCurrIndex = DimIE(blockedLoopIndices[0]);
+          IndexExpr blockedUB = SymIE(XFlatDims[0]);
+          IndexExpr isFull =
+              create.krnlIE.isTileFull(blockedCurrIndex, LitIE(B), blockedUB);
           Value zero = create.math.constantIndex(0);
           Value isNotFullVal = create.math.slt(isFull.getValue(), zero);
           create.scf.ifThenElse(
               isNotFullVal,
-              [&](SCFBuilder &scf) {
+              [&](const SCFBuilder &scf) {
                 MDBuilder create(scf);
                 // create.krnl.printf("partial tile\n");
                 Value startOfLastBlockVal = blockedCurrIndex.getValue();
                 Value blockedUBVal = blockedUB.getValue();
                 create.scf.forLoop(startOfLastBlockVal, blockedUBVal, 1,
-                    [&](SCFBuilder &scf, Value blockLocalInd) {
+                    [&](const SCFBuilder &scf, ValueRange loopInd) {
                       MDBuilder create(scf);
+                      Value blockLocalInd = loopInd[0];
                       generateIterWithSIMD(rewriter, create, lnOp, XFlatMemRef,
                           scaleFlatMemRef, biasFlatMemRef, YFlatMemRef,
                           meanFlatMemRef, invStdDevFlatMemRef, tmpRedMemRef,
                           tmpRedMemRef2, XFlatDims[1], blockLocalInd, epsilon,
-                          1, VL, scaleBroadcastKind, biasBroadcastKind,
+                          1, totVL, scaleBroadcastKind, biasBroadcastKind,
                           scaleModFactor, biasModFactor);
                     }); /* for inside blocked loop */
               },
-              [&](SCFBuilder &scf) {
+              [&](const SCFBuilder &scf) {
                 MDBuilder create(scf);
                 // create.krnl.printf("full tile\n");
                 generateIterWithSIMD(rewriter, create, lnOp, XFlatMemRef,
                     scaleFlatMemRef, biasFlatMemRef, YFlatMemRef,
                     meanFlatMemRef, invStdDevFlatMemRef, tmpRedMemRef,
                     tmpRedMemRef2, XFlatDims[1], blockedLoopIndices[0], epsilon,
-                    B, VL, scaleBroadcastKind, biasBroadcastKind,
+                    B, totVL, scaleBroadcastKind, biasBroadcastKind,
                     scaleModFactor, biasModFactor);
               });
         }); /* blocked loop */
@@ -1048,28 +1059,28 @@ def layer_norm_simd2_v3(x, a, scale, b):
     y = np.zeros((a1, s2))
     for i1 in range(0, a1, b1):
         # iterate over blocks of b1 values
-        
+
         # MEAN(x), MEAN(x2)
         # iterate over a_block, s_block: parallel add
         r = np.zeros((b1, b2))
         r_square = np.zeros((b1, b2))
-        for i2 in range(0, s2, b2): # Unroll B1, SIMD by B2, 
+        for i2 in range(0, s2, b2): # Unroll B1, SIMD by B2,
             xx = x[i1:i1+b1, i2:i2+b2]
             xxx = np.multiply(xx, xx)
             r = np.add(r, xx)
             r_square = np.add(r_square, xxx)
-            
+
         # simd reduction; res B1 x 1
         # 2 B1 div
         mean_b = np.sum(r, axis=1, keepdims=True) # SIMD reduction to (B1x1) values.
-        mean_b = np.divide(mean_b, s2) # (B2x1) values... so scalar is ok. 
+        mean_b = np.divide(mean_b, s2) # (B2x1) values... so scalar is ok.
         mean_square_b = np.sum(r_square, axis=1, keepdims=True) # Same.
-        mean_square_b = np.divide(mean_square_b, s2) 
+        mean_square_b = np.divide(mean_square_b, s2)
 
         # var = mean_square - mean**2; all compute here are on (B1x1): B1 mul, B1 add
         mean2_b = np.multiply(mean_b, mean_b) # B1 values, ok to do scalar
         var_b = np.subtract(mean_square_b, mean2_b)
-        
+
         # ADD eps, sqrt, inverse
         # computations on B1x1, scalar ok: B1 add, B1 sqrt, B1 div
         var_eps_b = np.add(var_b, 1e-05)
@@ -1079,7 +1090,7 @@ def layer_norm_simd2_v3(x, a, scale, b):
         # tot ops up to here (on B1x1): div: 3*B1, sqrt: B1, mul B1, add/sub 2 B1, sqrt B1: tot 8 B1
 
         # SIMD on entire S2 size
-        for i2 in range(0, s2, b2): # Unroll B1, SIMD by B2, 
+        for i2 in range(0, s2, b2): # Unroll B1, SIMD by B2,
             x_b = x[i1:i1+b1, i2:i2+b2]
             d_b = np.subtract(x_b, mean_b) # broadcast of mean_b of 1 -> s2
             normalized_b = np.multiply(d_b, inv_std_dev_b)  # broadcast of mean_b of 1 -> s2

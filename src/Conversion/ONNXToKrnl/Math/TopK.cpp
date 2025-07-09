@@ -35,9 +35,9 @@ struct ONNXTopKOpLowering : public OpConversionPattern<ONNXTopKOp> {
 
     // Convert the output type to MemRefType.
     Type convertedType = typeConverter->convertType(*op->result_type_begin());
-    assert(convertedType && convertedType.isa<MemRefType>() &&
+    assert(convertedType && mlir::isa<MemRefType>(convertedType) &&
            "Failed to convert type to MemRefType");
-    MemRefType resMemRefType = convertedType.cast<MemRefType>();
+    MemRefType resMemRefType = mlir::cast<MemRefType>(convertedType);
 
     // Common types.
     Type i64Type = rewriter.getI64Type();
@@ -69,10 +69,10 @@ struct ONNXTopKOpLowering : public OpConversionPattern<ONNXTopKOp> {
         /*ascending=*/ascendingMode);
 
     // Produce the final result.
-    SmallVector<IndexExpr> zeroDims(rank, LiteralIndexExpr(0));
+    SmallVector<IndexExpr> zeroDims(rank, LitIE(0));
     ValueRange loopDef = create.krnl.defineLoops(rank);
     create.krnl.iterateIE(loopDef, loopDef, zeroDims, resDims,
-        [&](KrnlBuilder &createKrnl, ValueRange resLoopInd) {
+        [&](const KrnlBuilder &createKrnl, ValueRange resLoopInd) {
           Value resInd = createKrnl.load(argSort, resLoopInd);
           SmallVector<Value> resIndexLoopInd(resLoopInd);
           resIndexLoopInd[axis] = resInd;

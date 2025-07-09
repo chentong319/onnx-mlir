@@ -51,14 +51,14 @@ LogicalResult ZHighGRUOpShapeHelper::computeShape() {
   if (isAllTimesteps)
     hnOutputDims.emplace_back(S);
   else
-    hnOutputDims.emplace_back(LiteralIndexExpr(1));
+    hnOutputDims.emplace_back(LitIE(1));
   hnOutputDims.emplace_back(D);
   hnOutputDims.emplace_back(B);
   hnOutputDims.emplace_back(H);
 
   // Shape for cf_ouput : [1, B, H]
   DimsExpr cfOutputDims;
-  cfOutputDims.emplace_back(LiteralIndexExpr(1));
+  cfOutputDims.emplace_back(LitIE(1));
   cfOutputDims.emplace_back(B);
   cfOutputDims.emplace_back(H);
 
@@ -100,15 +100,15 @@ LogicalResult ZHighGRUOp::verify() {
 
   // Verify hidden size in W.
   if (hasRankedType(W)) {
-    int64_t dim2 = W.getType().cast<RankedTensorType>().getShape()[2];
+    int64_t dim2 = mlir::cast<RankedTensorType>(W.getType()).getShape()[2];
     if (!ShapedType::isDynamic(dim2) && (dim2 != hiddenSize * 3))
       return failure();
   }
 
   // Verify hidden size in R.
   if (hasRankedType(R)) {
-    int64_t dim1 = R.getType().cast<RankedTensorType>().getShape()[1];
-    int64_t dim2 = R.getType().cast<RankedTensorType>().getShape()[2];
+    int64_t dim1 = mlir::cast<RankedTensorType>(R.getType()).getShape()[1];
+    int64_t dim2 = mlir::cast<RankedTensorType>(R.getType()).getShape()[2];
     if (!ShapedType::isDynamic(dim1) && (dim1 != hiddenSize))
       return failure();
     if (!ShapedType::isDynamic(dim2) && (dim2 != hiddenSize * 3))
@@ -116,15 +116,15 @@ LogicalResult ZHighGRUOp::verify() {
   }
 
   // Verify hidden size in WB.
-  if (!WB.getType().isa<NoneType>() && hasRankedType(WB)) {
-    int64_t dim1 = WB.getType().cast<RankedTensorType>().getShape()[1];
+  if (!mlir::isa<NoneType>(WB.getType()) && hasRankedType(WB)) {
+    int64_t dim1 = mlir::cast<RankedTensorType>(WB.getType()).getShape()[1];
     if (!ShapedType::isDynamic(dim1) && (dim1 != hiddenSize * 3))
       return failure();
   }
 
   // Verify hidden size in RB.
-  if (!RB.getType().isa<NoneType>() && hasRankedType(RB)) {
-    int64_t dim1 = RB.getType().cast<RankedTensorType>().getShape()[1];
+  if (!mlir::isa<NoneType>(RB.getType()) && hasRankedType(RB)) {
+    int64_t dim1 = mlir::cast<RankedTensorType>(RB.getType()).getShape()[1];
     if (!ShapedType::isDynamic(dim1) && (dim1 != hiddenSize * 3))
       return failure();
   }
@@ -137,11 +137,12 @@ LogicalResult ZHighGRUOp::verify() {
 //===----------------------------------------------------------------------===//
 
 LogicalResult ZHighGRUOp::inferShapes(
-    std::function<void(mlir::Region &)> doShapeInference) {
+    std::function<void(Region &)> doShapeInference) {
   if (!hasRankedType(getInput()) || !hasRankedType(getHiddenWeights()))
     return success();
 
-  Type elementType = getResult().getType().cast<ShapedType>().getElementType();
+  Type elementType =
+      mlir::cast<ShapedType>(getResult().getType()).getElementType();
   ZTensorEncodingAttr encoding = ZTensorEncodingAttr::get(
       this->getContext(), ZTensorEncodingAttr::DataLayout::_4DS);
   ZHighGRUOpShapeHelper shapeHelper(getOperation());

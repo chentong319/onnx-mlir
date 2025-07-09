@@ -29,6 +29,9 @@ LogicalResult ONNXTileOpShapeHelper::computeShape() {
   ONNXTileOpAdaptor operandAdaptor(operands);
   // Get info about input data operand.
   Value input = operandAdaptor.getInput();
+  if (!hasShapeAndRank(input)) {
+    return failure();
+  }
   int64_t inputRank = createIE->getShapedTypeRank(input);
   Value repeats = operandAdaptor.getRepeats();
   // Compute outputDims
@@ -61,11 +64,12 @@ LogicalResult ONNXTileOp::inferShapes(
     return success();
 
   // 'repeats' tensor is an 1D tensor.
-  auto repeatsTensorTy = getRepeats().getType().cast<RankedTensorType>();
+  auto repeatsTensorTy = mlir::cast<RankedTensorType>(getRepeats().getType());
   if (repeatsTensorTy.getShape().size() != 1)
     return emitError("Repeats tensor must have rank one");
 
-  Type elementType = getInput().getType().cast<ShapedType>().getElementType();
+  Type elementType =
+      mlir::cast<ShapedType>(getInput().getType()).getElementType();
   ONNXTileOpShapeHelper shapeHelper(getOperation(), {});
   return shapeHelper.computeShapeAndUpdateType(elementType);
 }

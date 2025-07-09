@@ -8,7 +8,8 @@
 //
 //===----------------------------------------------------------------------===//
 
-#pragma once
+#ifndef ONNX_MLIR_DISPOSABLE_ELEMENTS_ATTR_H
+#define ONNX_MLIR_DISPOSABLE_ELEMENTS_ATTR_H
 
 #include "src/Dialect/ONNX/ElementsAttr/BType.hpp"
 #include "src/Dialect/ONNX/ElementsAttr/WideNum.hpp"
@@ -112,8 +113,13 @@ public:
 
   // Allow implicit conversion to ElementsAttr.
   operator ElementsAttr() const {
-    return *this ? cast<ElementsAttr>() : nullptr;
+    return *this ? mlir::cast<ElementsAttr>(*this) : nullptr;
   }
+
+  // Clears the buffer payload shared_ptr which decreases the reference count
+  // and, if it reaches zero, frees or closes the underlying MemoryBuffer's
+  // heap allocation or file. Called from DisposablePool.
+  void dispose();
 
 private:
   // Called from DisposablePool who calls with a unique id and records the
@@ -121,11 +127,6 @@ private:
   static DisposableElementsAttr create(ShapedType type, size_t id,
       BType bufferBType, ArrayRef<int64_t> strides, const Buffer &buffer,
       Transformer transformer);
-
-  // Clears the buffer payload shared_ptr which decreases the reference count
-  // and, if it reaches zero, frees or closes the underlying MemoryBuffer's
-  // heap allocation or file. Called from DisposablePool.
-  void dispose();
 
 public:
   //===--------------------------------------------------------------------===//
@@ -258,6 +259,12 @@ public:
   template <typename X>
   void readArray(MutableArrayRef<X> dst) const;
 
+  // Returns a pointer to the underlying data as a flat byte array, if
+  // everything aligns, otherwise makes and returns a copy.
+  // If the element type is bool the data holds one byte (with value 0 or 1) per
+  // bool (contrary to how DenseElementsAttr::getRawData() bit packs bools).
+  onnx_mlir::ArrayBuffer<char> getRawBytes() const;
+
   // Returns a pointer to the underlying data as a flat WideNum array, if
   // everything aligns, otherwise makes and returns a copy.
   onnx_mlir::ArrayBuffer<WideNum> getWideNums() const;
@@ -312,12 +319,6 @@ private:
   // bool (contrary to how DenseElementsAttr::getRawData() bit packs bools).
   void readRawBytes(MutableArrayRef<char> dst) const;
 
-  // Returns a pointer to the underlying data as a flat byte array, if
-  // everything aligns, otherwise makes and returns a copy.
-  // If the element type is bool the data holds one byte (with value 0 or 1) per
-  // bool (contrary to how DenseElementsAttr::getRawData() bit packs bools).
-  onnx_mlir::ArrayBuffer<char> getRawBytes() const;
-
 }; // class DisposableElementsAttr
 
 // Include template implementations.
@@ -326,3 +327,4 @@ private:
 } // namespace mlir
 
 MLIR_DECLARE_EXPLICIT_TYPE_ID(::mlir::DisposableElementsAttr)
+#endif

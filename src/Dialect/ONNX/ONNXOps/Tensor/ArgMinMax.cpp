@@ -30,7 +30,7 @@ LogicalResult ONNXArgMinMaxOpShapeHelper<OP_TYPE>::computeShape() {
   OP_TYPE argOp = llvm::cast<OP_TYPE>(op);
   typename OP_TYPE::Adaptor operandAdaptor(operands);
   Value data = operandAdaptor.getData();
-  int64_t dataRank = data.getType().cast<ShapedType>().getRank();
+  int64_t dataRank = mlir::cast<ShapedType>(data.getType()).getRank();
   int64_t axisValue = argOp.getAxis();
 
   // axis attribute must be in the range [-r,r-1], where r = rank(data).
@@ -55,8 +55,8 @@ LogicalResult ONNXArgMinMaxOpShapeHelper<OP_TYPE>::computeShape() {
   outputDims.resize(reducedRank);
   for (int64_t i = 0; i < reducedRank; i++) {
     if (isKeepdims)
-      outputDims[i] = (i != axisValue) ? createIE->getShapeAsDim(data, i)
-                                       : LiteralIndexExpr(1);
+      outputDims[i] =
+          (i != axisValue) ? createIE->getShapeAsDim(data, i) : LitIE(1);
     else
       outputDims[i] = (i < axisValue) ? createIE->getShapeAsDim(data, i)
                                       : createIE->getShapeAsDim(data, i + 1);
@@ -77,7 +77,7 @@ LogicalResult ONNXArgMaxOp::verify() {
   if (!hasShapeAndRank(getOperation()))
     return success();
 
-  int64_t rank = getData().getType().cast<ShapedType>().getRank();
+  int64_t rank = mlir::cast<ShapedType>(getData().getType()).getRank();
   int64_t axisIndex = getAxis();
 
   // axis value must be in the range [-rank, rank-1].
@@ -109,7 +109,7 @@ LogicalResult ONNXArgMinOp::verify() {
   if (!hasShapeAndRank(getOperation()))
     return success();
 
-  int64_t rank = getData().getType().cast<ShapedType>().getRank();
+  int64_t rank = mlir::cast<ShapedType>(getData().getType()).getRank();
   int64_t axisIndex = getAxis();
 
   // axis value must be in the range [-rank, rank-1].

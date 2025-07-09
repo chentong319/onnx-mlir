@@ -41,7 +41,7 @@ public:
       ConversionPatternRewriter &rewriter) const final {
     KrnlRandomNormalOpAdaptor operandAdaptor(operands);
     Location loc = op->getLoc();
-    mlir::Type inType = op->getOperand(2).getType();
+    Type inType = op->getOperand(2).getType();
     MultiDialectBuilder<LLVMBuilder> create(rewriter, loc);
 
     // Get a symbol reference to the memcpy function, inserting it if necessary.
@@ -50,10 +50,9 @@ public:
         getOrInsertRandomNormal(rewriter, parentModule, inType);
 
     // First operand.
-    Type outputType = operandAdaptor.getOutput()
-                          .getType()
-                          .cast<LLVM::LLVMStructType>()
-                          .getBody()[1];
+    Type outputType =
+        mlir::cast<LLVM::LLVMStructType>(operandAdaptor.getOutput().getType())
+            .getBody()[1];
     Value alignedOutput =
         create.llvm.extractValue(outputType, operandAdaptor.getOutput(), {1});
 
@@ -81,10 +80,10 @@ private:
     // or
     //  (memref<3x4x5xf64>, index, f64, f64, f64)
     Type llvmVoidTy = LLVM::LLVMVoidType::get(context);
-    Type llvmOptionsTy = FloatType::getF32(context);
+    Type llvmOptionsTy = Float32Type::get(context);
     Type llvmOutputTy = getPointerType(context, llvmOptionsTy);
     if (inType.isF64()) {
-      llvmOptionsTy = FloatType::getF64(context);
+      llvmOptionsTy = Float64Type::get(context);
       llvmOutputTy = getPointerType(context, llvmOptionsTy);
     }
     Type llvmI64Ty = IntegerType::get(context, 64);

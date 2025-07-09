@@ -4,7 +4,7 @@
 
 //====------ ConvertKrnlToLLVM.hpp - Krnl Dialect Lowering  ---------------===//
 //
-// Copyright 2019-2022 The IBM Research Authors.
+// Copyright 2019-2024 The IBM Research Authors.
 //
 // =============================================================================
 //
@@ -12,7 +12,8 @@
 //
 //===----------------------------------------------------------------------===//
 
-#pragma once
+#ifndef ONNX_MLIR_CONVERT_KRNL_TO_LLVM_H
+#define ONNX_MLIR_CONVERT_KRNL_TO_LLVM_H
 
 #include "src/Dialect/Krnl/KrnlOps.hpp"
 #include "src/Pass/Passes.hpp"
@@ -106,6 +107,10 @@ void populateLoweringKrnlVectorTypeCastOpPattern(
 void populateLoweringKrnlNoneOpPattern(mlir::LLVMTypeConverter &typeConverter,
     mlir::RewritePatternSet &patterns, mlir::MLIRContext *ctx);
 
+void populateLoweringKrnlRoundEvenOpPattern(
+    mlir::LLVMTypeConverter &typeConverter, mlir::RewritePatternSet &patterns,
+    mlir::MLIRContext *ctx);
+
 void determineOwnershipForOutputOMTensors(mlir::ModuleOp &module,
     llvm::SmallVectorImpl<bool> &outputOMTensorOwnerships);
 
@@ -120,3 +125,4 @@ void genSignatureFunction(mlir::ModuleOp &module,
     const llvm::SmallVectorImpl<mlir::LLVM::GlobalOp> &outSigGlobalOps);
 } // namespace krnl
 } // namespace onnx_mlir
+#endif

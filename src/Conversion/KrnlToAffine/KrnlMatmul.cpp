@@ -4,7 +4,7 @@
 
 //===-------------- KrnlMatmul.cpp - Lower KrnlMatmulOp -------------------===//
 //
-// Copyright 2019-2023 The IBM Research Authors.
+// Copyright 2019-2024 The IBM Research Authors.
 //
 // =============================================================================
 //
@@ -42,20 +42,24 @@ extern std::mutex unrollAndJamMutex;
 class KrnlMatmulLowering : public ConversionPattern {
 public:
   explicit KrnlMatmulLowering(
-      TypeConverter &typeConverter, MLIRContext *context)
+      TypeConverter &typeConverter, MLIRContext *context, bool parallelEnabled)
       : ConversionPattern(
-            typeConverter, KrnlMatMulOp::getOperationName(), 1, context) {}
+            typeConverter, KrnlMatMulOp::getOperationName(), 1, context) {
+    this->parallelEnabled = parallelEnabled;
+  }
+
+  bool parallelEnabled = false;
 
   LogicalResult matchAndRewrite(Operation *op, ArrayRef<Value> operands,
       ConversionPatternRewriter &rewriter) const override {
-    auto matmulOp = cast<KrnlMatMulOp>(op);
+    auto matmulOp = mlir::cast<KrnlMatMulOp>(op);
     KrnlMatMulOpAdaptor operandAdaptor(matmulOp);
     // Option.
     bool fullUnrollAndJam = matmulOp.getUnroll();
 
     // Operands and types.
-    Type elementType =
-        operandAdaptor.getA().getType().cast<MemRefType>().getElementType();
+    Type elementType = mlir::cast<MemRefType>(operandAdaptor.getA().getType())
+                           .getElementType();
     bool simdize = matmulOp.getSimdize();
     // Init scope and emit constants.
     Location loc = matmulOp.getLoc();
@@ -70,9 +74,9 @@ public:
         C(operandAdaptor.getC());
     SmallVector<IndexExpr, 4> aBounds, bBounds, cBounds, aTileSizeFromAttr,
         bTileSizeFromAttr, cTileSizeFromAttr, computeTileSizeFromAttr;
-    create.krnlIE.getShapeAsSymbols(A, aBounds);
-    create.krnlIE.getShapeAsSymbols(B, bBounds);
-    create.krnlIE.getShapeAsSymbols(C, cBounds);
+    create.krnlIE.getShapeAsDims(A, aBounds);
+    create.krnlIE.getShapeAsDims(B, bBounds);
+    create.krnlIE.getShapeAsDims(C, cBounds);
     int64_t aRank(aBounds.size()), bRank(bBounds.size()), cRank(cBounds.size());
     // Tile sizes for A/B/C are determined by their memref unless explicitly
     // specified by an optional argument. That allows A/B/C memrefs to be
@@ -113,7 +117,7 @@ public:
       kComputeTileSize = computeTileSizeFromAttr[2];
     }
     // Get the global upper bound of the original computations.
-    SymbolIndexExpr iGlobalUB(operandAdaptor.getIGlobalUB()),
+    DimIndexExpr iGlobalUB(operandAdaptor.getIGlobalUB()),
         jGlobalUB(operandAdaptor.getJGlobalUB()),
         kGlobalUB(operandAdaptor.getKGlobalUB());
 
@@ -122,7 +126,7 @@ public:
                             jGlobalUB.getLiteral() == 1;
 
     // Investigate SIMD
-    IndexExpr vectorLen = LiteralIndexExpr(1); // Assume no simd.
+    IndexExpr vectorLen = LitIE(1); // Assume no simd.
     if (simdize) {
       if (matVectorProduct) {
         // Matrix (I x K) times vector (K x 1). We currently vectorize along the
@@ -131,10 +135,10 @@ public:
         if (iComputeTileSize.isLiteral() && kComputeTileSize.isLiteral()) {
           uint64_t i = iComputeTileSize.getLiteral();
           uint64_t k = kComputeTileSize.getLiteral();
-          uint64_t mVL = create.vec.getMachineVectorLength(elementType);
-          if (i % mVL == 0 && k % mVL == 0) {
-            // Right now, vector length must be mVL.
-            vectorLen = LiteralIndexExpr(mVL);
+          uint64_t archVL = create.vec.getArchVectorLength(elementType);
+          if (i % archVL == 0 && k % archVL == 0) {
+            // Right now, vector length must be archVL.
+            vectorLen = LitIE(archVL);
           } else {
             simdize = false;
             LLVM_DEBUG(llvm::dbgs() << "Matmul: mat*vec with bad sizes: i " << i
@@ -167,34 +171,31 @@ public:
     // A[i, k];
     SmallVector<IndexExpr, 4> aStart, bStart, cStart;
     for (int t = 0; t < aRank - 2; t++)
-      aStart.emplace_back(
-          SymbolIndexExpr(operandAdaptor.getAGlobalIndexMemStart()[t]));
+      aStart.emplace_back(DimIE(operandAdaptor.getAGlobalIndexMemStart()[t]));
     aStart.emplace_back(
         iGlobalIndexComputeStart -
-        DimIndexExpr(operandAdaptor.getAGlobalIndexMemStart()[aRank - 2]));
+        DimIE(operandAdaptor.getAGlobalIndexMemStart()[aRank - 2]));
     aStart.emplace_back(
         kGlobalIndexComputeStart -
-        DimIndexExpr(operandAdaptor.getAGlobalIndexMemStart()[aRank - 1]));
+        DimIE(operandAdaptor.getAGlobalIndexMemStart()[aRank - 1]));
     // B[k, j];
     for (int t = 0; t < bRank - 2; t++)
-      bStart.emplace_back(
-          SymbolIndexExpr(operandAdaptor.getBGlobalIndexMemStart()[t]));
+      bStart.emplace_back(DimIE(operandAdaptor.getBGlobalIndexMemStart()[t]));
     bStart.emplace_back(
         kGlobalIndexComputeStart -
-        DimIndexExpr(operandAdaptor.getBGlobalIndexMemStart()[bRank - 2]));
+        DimIE(operandAdaptor.getBGlobalIndexMemStart()[bRank - 2]));
     bStart.emplace_back(
         jGlobalIndexComputeStart -
-        DimIndexExpr(operandAdaptor.getBGlobalIndexMemStart()[bRank - 1]));
+        DimIE(operandAdaptor.getBGlobalIndexMemStart()[bRank - 1]));
     // C[i, j]
     for (int t = 0; t < cRank - 2; t++)
-      cStart.emplace_back(
-          SymbolIndexExpr(operandAdaptor.getCGlobalIndexMemStart()[t]));
+      cStart.emplace_back(DimIE(operandAdaptor.getCGlobalIndexMemStart()[t]));
     cStart.emplace_back(
         iGlobalIndexComputeStart -
-        DimIndexExpr(operandAdaptor.getCGlobalIndexMemStart()[cRank - 2]));
+        DimIE(operandAdaptor.getCGlobalIndexMemStart()[cRank - 2]));
     cStart.emplace_back(
         jGlobalIndexComputeStart -
-        DimIndexExpr(operandAdaptor.getCGlobalIndexMemStart()[cRank - 1]));
+        DimIE(operandAdaptor.getCGlobalIndexMemStart()[cRank - 1]));
 
     // Now determine if we have full/partial tiles. This is determined by the
     // outer dimensions of the original computations, as by definition tiling
@@ -224,56 +225,66 @@ public:
     if (simdize) {
       // SIMD code generator.
       if (matVectorProduct) {
+        // Alloc of temp outside of inner if/then/else.
+        Value TmpSimdProd = allocForGenSimdMatVect(create.affineKMem,
+            elementType, iComputeTileSize, jComputeTileSize, kComputeTileSize,
+            vectorLen, fullUnrollAndJam);
+        Value TmpScalarProd = allocForGenScalar(create.affineKMem, elementType,
+            iTrip, jTrip, kTrip, /*unroll*/ false);
         // clang-format off
-        create.affineKMem.ifThenElse(indexScope, allFullTiles,
-          /* then full tiles */ [&](AffineBuilderKrnlMem &createAffine) {
-          genSimdMatVect(createAffine, matmulOp, elementType, aStart, bStart,
+        create.affineKMem.ifThenElseIE(indexScope, allFullTiles,
+          /* then full tiles */ [&](const AffineBuilderKrnlMem &createAffine) {
+          genSimdMatVect(createAffine, matmulOp, TmpSimdProd, elementType, aStart, bStart,
             cStart, iComputeTileSize, jComputeTileSize, kComputeTileSize,
             vectorLen, fullUnrollAndJam);
-        }, /* else has partial tiles */ [&](AffineBuilderKrnlMem &createAffine) {
-          genScalar(createAffine, matmulOp, elementType, aStart, bStart, cStart,
+        }, /* else has partial tiles */ [&](const AffineBuilderKrnlMem &createAffine) {
+          genScalar(createAffine, matmulOp, TmpScalarProd, elementType, aStart, bStart, cStart,
             iTrip, jTrip, kTrip, /*unroll*/ false);
         });
         // clang-format on
       } else {
+        Value TmpSimdC = allocForGenSimdMatMat(create.affineKMem, elementType,
+            iComputeTileSize, jComputeTileSize, kComputeTileSize, vectorLen,
+            fullUnrollAndJam);
+        Value TmpScalarC = allocForGenScalar(create.affineKMem, elementType,
+            iTrip, jPartialTrip, kTrip, /*unroll*/ false);
         // clang-format off
-        create.affineKMem.ifThenElse(indexScope, allFullTiles,
-          /* then full tiles */ [&](AffineBuilderKrnlMem &createAffine) {
-          genSimdMatMat(createAffine, matmulOp, elementType, aStart, bStart,
+        create.affineKMem.ifThenElseIE(indexScope, allFullTiles,
+          /* then full tiles */ [&](const AffineBuilderKrnlMem &createAffine) {
+          genSimdMatMat(createAffine, matmulOp, TmpSimdC, elementType, aStart, bStart,
              cStart, iComputeTileSize, jComputeTileSize, kComputeTileSize,
-            vectorLen, fullUnrollAndJam); 
-        }, /* has some partial tiles */ [&](AffineBuilderKrnlMem &createAffine) {
+            vectorLen, fullUnrollAndJam);
+          }, 
+          /* Else has some partial tiles */ 
+          [&](const AffineBuilderKrnlMem &createAffine) {
           // Trip regardless of full/partial for N & K
           // Test if SIMD dim (M) is full.
-          createAffine.ifThenElse(indexScope, jFullTiles,
-            /* full SIMD */ [&](AffineBuilderKrnlMem &createAffine) {
-            genSimdMatMat(createAffine, matmulOp, elementType, aStart, bStart,
+          createAffine.ifThenElseIE(indexScope, jFullTiles,
+            /* full SIMD */ [&](const AffineBuilderKrnlMem &createAffine) {
+            genSimdMatMat(createAffine, matmulOp, TmpSimdC, elementType, aStart, bStart,
                cStart, iTrip, jComputeTileSize, kTrip, vectorLen, /*unroll*/ false);
-          }, /* else partial SIMD */ [&](AffineBuilderKrnlMem &createAffine) {
-            // TODO: evaluate if get performance from partial SIMD
-            if (false && jPartialTrip.isLiteral() && jPartialTrip.getLiteral() >=2) {
-              // has a known trip count along the simd dimension of at least 2
-              // elements, use simd again.
-              genSimdMatMat(createAffine, matmulOp, elementType, aStart, bStart,
-                cStart, iTrip, jPartialTrip, kTrip, vectorLen, /*unroll*/ false);
-            } else {
-              genScalar(createAffine, matmulOp, elementType, aStart, bStart, cStart,
-                iTrip, jPartialTrip, kTrip, /*unroll*/ false);
-            }
+          }, /* else partial SIMD */ [&](const AffineBuilderKrnlMem &createAffine) {
+            genScalar(createAffine, matmulOp, TmpScalarC, elementType, aStart, bStart, cStart,
+              iTrip, jPartialTrip, kTrip, /*unroll*/ false);
           });
         });
         // clang-format on
       }
     } else {
       // Scalar code generator.
+      Value TmpThenC =
+          allocForGenScalar(create.affineKMem, elementType, iComputeTileSize,
+              jComputeTileSize, kComputeTileSize, fullUnrollAndJam);
+      Value TmpElseC = allocForGenScalar(
+          create.affineKMem, elementType, iTrip, jTrip, kTrip, false);
       // clang-format off
-      create.affineKMem.ifThenElse(indexScope, allFullTiles,
-        /* then full */ [&](AffineBuilderKrnlMem &createAffine) {
-        genScalar(createAffine, matmulOp, elementType, aStart, bStart, cStart,
+      create.affineKMem.ifThenElseIE(indexScope, allFullTiles,
+        /* then full */ [&](const AffineBuilderKrnlMem &createAffine) {
+        genScalar(createAffine, matmulOp, TmpThenC, elementType, aStart, bStart, cStart,
           iComputeTileSize, jComputeTileSize, kComputeTileSize,
-          fullUnrollAndJam); 
-      }, /* else partial */ [&](AffineBuilderKrnlMem &createAffine) {
-        genScalar(createAffine, matmulOp, elementType, aStart, bStart, cStart,
+          fullUnrollAndJam);
+      }, /* else partial */ [&](const AffineBuilderKrnlMem &createAffine) {
+        genScalar(createAffine, matmulOp, TmpElseC, elementType, aStart, bStart, cStart,
           iTrip, jTrip, kTrip, false);
       });
       // clang-format on
@@ -283,10 +294,25 @@ public:
   }
 
 private:
-  void genScalar(AffineBuilderKrnlMem &createAffine, KrnlMatMulOp op,
-      Type elementType, ArrayRef<IndexExpr> aStart, ArrayRef<IndexExpr> bStart,
-      ArrayRef<IndexExpr> cStart, IndexExpr I, IndexExpr J, IndexExpr K,
+  Value allocForGenScalar(const AffineBuilderKrnlMem &createAffine,
+      Type elementType, IndexExpr I, IndexExpr J, IndexExpr K,
       bool unrollJam) const {
+    // Get operands.
+    MemRefBuilder createMemRef(createAffine);
+    int64_t unrollFactor = (unrollJam && J.isLiteral()) ? J.getLiteral() : 1;
+    // Have to privatize CTmpType by unroll factor (1 if none).
+    MemRefType CTmpType = MemRefType::get({unrollFactor}, elementType);
+    assert(BUFFER_ALIGN >= gDefaultAllocAlign);
+
+    if (parallelEnabled)
+      return createMemRef.alignedAlloc(CTmpType, BUFFER_ALIGN);
+    return createMemRef.alignedAlloca(CTmpType, BUFFER_ALIGN);
+  }
+
+  void genScalar(const AffineBuilderKrnlMem &createAffine, KrnlMatMulOp op,
+      Value TmpC, Type elementType, ArrayRef<IndexExpr> aStart,
+      ArrayRef<IndexExpr> bStart, ArrayRef<IndexExpr> cStart, IndexExpr I,
+      IndexExpr J, IndexExpr K, bool unrollJam) const {
     // Get operands.
     KrnlMatMulOpAdaptor operandAdaptor(op);
     MemRefBuilder createMemRef(createAffine);
@@ -294,19 +320,18 @@ private:
     Value A(operandAdaptor.getA()), B(operandAdaptor.getB()),
         C(operandAdaptor.getC());
     int64_t unrollFactor = (unrollJam && J.isLiteral()) ? J.getLiteral() : 1;
-    // Have to privatize CTmpType by unroll factor (1 if none).
-    MemRefType CTmpType = MemRefType::get({unrollFactor}, elementType);
-    assert(BUFFER_ALIGN >= gDefaultAllocAlign);
-    Value TmpC = createMemRef.alignedAlloc(CTmpType, BUFFER_ALIGN);
 
     // For i, j loops.
     LiteralIndexExpr zeroIE(0);
     Value jSaved;
-    createAffine.forIE(
-        zeroIE, I, 1, [&](AffineBuilderKrnlMem &createAffine, Value i) {
-          createAffine.forIE(
-              zeroIE, J, 1, [&](AffineBuilderKrnlMem &createAffine, Value j) {
+    createAffine.forLoopIE(zeroIE, I, 1,
+        [&](const AffineBuilderKrnlMem &createAffine, ValueRange loopInd) {
+          Value i = loopInd[0];
+          createAffine.forLoopIE(zeroIE, J, 1,
+              [&](const AffineBuilderKrnlMem &createAffine,
+                  ValueRange loopInd) {
                 MathBuilder createMath(createAffine);
+                Value j = loopInd[0];
                 // Defines induction variables, and possibly initialize C.
                 jSaved = j;
                 // Alloc and init temp c storage.
@@ -315,9 +340,11 @@ private:
                 // TTmpC() = affine_load(C, cAccess);
                 createAffine.store(initVal, TmpC, tmpCAccess);
                 // Sum over k.
-                createAffine.forIE(zeroIE, K, 1,
-                    [&](AffineBuilderKrnlMem &createAffine, Value k) {
+                createAffine.forLoopIE(zeroIE, K, 1,
+                    [&](const AffineBuilderKrnlMem &createAffine,
+                        ValueRange loopInd) {
                       MathBuilder createMath(createAffine);
+                      Value k = loopInd[0];
                       Value a = createAffine.loadIE(A, aStart, {i, k});
                       Value b = createAffine.loadIE(B, bStart, {k, j});
                       Value res = createMath.mul(a, b);
@@ -338,27 +365,19 @@ private:
     }
   }
 
-  // Initially, simdize with full K vector length.
-  void genSimdMatVect(AffineBuilderKrnlMem &createAffine, KrnlMatMulOp op,
-      Type elementType, ArrayRef<IndexExpr> aStart, ArrayRef<IndexExpr> bStart,
-      ArrayRef<IndexExpr> cStart, IndexExpr I, IndexExpr J, IndexExpr K,
+  Value allocForGenSimdMatVect(const AffineBuilderKrnlMem &createAffine,
+      Type elementType, IndexExpr I, IndexExpr J, IndexExpr K,
       IndexExpr vectorLen, bool unrollJam) const {
     // can simdize only if I & K is compile time
     assert(I.isLiteral() && K.isLiteral() && vectorLen.isLiteral() &&
            "can only simdize with compile time "
            "blocking factor on simd axis");
-    MultiDialectBuilder<MathBuilder, VectorBuilder, AffineBuilderKrnlMem,
-        MemRefBuilder, KrnlBuilder>
-        create(createAffine);
+    MultiDialectBuilder<VectorBuilder, MemRefBuilder> create(createAffine);
     int64_t iLit(I.getLiteral()), VL(vectorLen.getLiteral());
-    int64_t mVL = create.vec.getMachineVectorLength(elementType);
-    // Get operands.
-    KrnlMatMulOpAdaptor operandAdaptor = KrnlMatMulOpAdaptor(op);
-    Value A(operandAdaptor.getA()), B(operandAdaptor.getB()),
-        C(operandAdaptor.getC());
+    int64_t archVL = create.vec.getArchVectorLength(elementType);
 
     // Generate the vector type conversions.
-    assert(VL == mVL && "vector length and VL must be identical for now");
+    assert(VL == archVL && "vector length and VL must be identical for now");
     VectorType vecType = VectorType::get({VL}, elementType);
     int64_t iUnrollFactor = iLit;
     assert(iUnrollFactor % VL == 0 && "i blocking should be a multiple of VL");
@@ -368,13 +387,45 @@ private:
     assert(BUFFER_ALIGN >= gDefaultAllocAlign &&
            "alignment of buffers cannot be smaller than the default alignment "
            "(which is set for SIMD correctness");
-    // TODO: alloca is good as it help simplify away this data structures (as it
-    // is only used as local temp, basically extensions of registers). However,
-    // there might be issues with non-removed alloca when they are not in the
-    // innermost loop. Still think its worth it having alloca as we want
-    // eventually all the refs to alloca to be register/spill access, not memory
-    // load/stores.
-    Value TmpProd = create.mem.alignedAlloca(CTmpType, BUFFER_ALIGN);
+    // Ok to use an alloca here because hoisting will take it out of the loop,
+    // as it is now generated before the scf.if which precluded the migration to
+    // outside the loops.
+
+    // But at this time, if parallel is enabled, alloca would be stuck inside of
+    // the parallel loop, which is not great. TODO: migrate alloca from inside
+    // the parallel loop to the OMP parallel region before the loop.
+    // Grep for this pattern in all 3 instances of "parallelEnabled".
+
+    if (parallelEnabled)
+      return create.mem.alignedAlloc(CTmpType, BUFFER_ALIGN);
+    return create.mem.alignedAlloca(CTmpType, BUFFER_ALIGN);
+  }
+
+  // Initially, simdize with full K vector length.
+  void genSimdMatVect(const AffineBuilderKrnlMem &createAffine, KrnlMatMulOp op,
+      Value TmpProd, Type elementType, ArrayRef<IndexExpr> aStart,
+      ArrayRef<IndexExpr> bStart, ArrayRef<IndexExpr> cStart, IndexExpr I,
+      IndexExpr J, IndexExpr K, IndexExpr vectorLen, bool unrollJam) const {
+    // can simdize only if I & K is compile time
+    assert(I.isLiteral() && K.isLiteral() && vectorLen.isLiteral() &&
+           "can only simdize with compile time "
+           "blocking factor on simd axis");
+    MultiDialectBuilder<MathBuilder, VectorBuilder, AffineBuilderKrnlMem,
+        MemRefBuilder, KrnlBuilder>
+        create(createAffine);
+    int64_t iLit(I.getLiteral()), VL(vectorLen.getLiteral());
+    int64_t archVL = create.vec.getArchVectorLength(elementType);
+    // Get operands.
+    KrnlMatMulOpAdaptor operandAdaptor = KrnlMatMulOpAdaptor(op);
+    Value A(operandAdaptor.getA()), B(operandAdaptor.getB()),
+        C(operandAdaptor.getC());
+
+    // Generate the vector type conversions.
+    assert(VL == archVL && "vector length and VL must be identical for now");
+    VectorType vecType = VectorType::get({VL}, elementType);
+    int64_t iUnrollFactor = iLit;
+    assert(iUnrollFactor % VL == 0 && "i blocking should be a multiple of VL");
+
     // Init with zero.
     Value fZero = create.math.constant(elementType, 0);
     Value vFZero = create.vec.broadcast(vecType, fZero);
@@ -382,9 +433,10 @@ private:
     LiteralIndexExpr zeroIE(0);
     Value iZero = create.math.constantIndex(0);
 
-    create.affineKMem.forIE(
-        zeroIE, K, VL, [&](AffineBuilderKrnlMem &createAffine, Value k) {
+    create.affineKMem.forLoopIE(zeroIE, K, VL,
+        [&](const AffineBuilderKrnlMem &createAffine, ValueRange loopInd) {
           MultiDialectBuilder<MathBuilder, VectorBuilder> create(createAffine);
+          Value k = loopInd[0];
           // Iterates over the I indices (K is SIMD dim).
           // First compute A[i,k]*B[k, 1] for i=0..iUnrollFactor explicitly.
           // We reuse B[k][0] vector for each iteration of i.
@@ -405,7 +457,7 @@ private:
           }
         });
 
-    // Reduce each SIMD vector of length mVL using a SIMD parallel reduction.
+    // Reduce each SIMD vector of length VL using a SIMD parallel reduction.
     SmallVector<Value, 8> vProdList, vReductionList;
     for (int64_t i = 0; i < iUnrollFactor; ++i) {
       Value iVal = create.math.constantIndex(i);
@@ -428,11 +480,37 @@ private:
     }
   }
 
-  // Simdize along J / memory rows in B and C.
-  void genSimdMatMat(AffineBuilderKrnlMem &createAffine, KrnlMatMulOp op,
-      Type elementType, ArrayRef<IndexExpr> aStart, ArrayRef<IndexExpr> bStart,
-      ArrayRef<IndexExpr> cStart, IndexExpr I, IndexExpr J, IndexExpr K,
+  Value allocForGenSimdMatMat(const AffineBuilderKrnlMem &createAffine,
+      Type elementType, IndexExpr I, IndexExpr J, IndexExpr K,
       IndexExpr vectorLen, bool unrollJam) const {
+    // can simdize only if K is compile time
+    MultiDialectBuilder<MemRefBuilder> create(createAffine);
+
+    // Generate the vector type conversions.
+    int64_t VL = vectorLen.getLiteral();
+    VectorType vecType = VectorType::get({VL}, elementType);
+    int64_t unrollFactor = (unrollJam && I.isLiteral()) ? I.getLiteral() : 1;
+    // Have to privatize CTmpType by unroll factor (1 if none).
+    MemRefType CTmpType = MemRefType::get({unrollFactor}, vecType);
+    assert(BUFFER_ALIGN >= gDefaultAllocAlign);
+    // Ok to use an alloca here because hoisting will take it out of the loop,
+    // as it is now generated before the scf.if which precluded the migration to
+    // outside the loops.
+
+    // But at this time, if parallel is enabled, alloca would be stuck inside of
+    // the parallel loop, which is not great. TODO: migrate alloca from inside
+    // the parallel loop to the OMP parallel region before the loop.
+
+    if (parallelEnabled)
+      return create.mem.alignedAlloc(CTmpType, BUFFER_ALIGN);
+    return create.mem.alignedAlloca(CTmpType, BUFFER_ALIGN);
+  }
+
+  // Simdize along J / memory rows in B and C.
+  void genSimdMatMat(const AffineBuilderKrnlMem &createAffine, KrnlMatMulOp op,
+      Value TmpC, Type elementType, ArrayRef<IndexExpr> aStart,
+      ArrayRef<IndexExpr> bStart, ArrayRef<IndexExpr> cStart, IndexExpr I,
+      IndexExpr J, IndexExpr K, IndexExpr vectorLen, bool unrollJam) const {
     // can simdize only if K is compile time
     assert(J.isLiteral() &&
            "can only simdize with compile time blocking factor on simd axis");
@@ -447,35 +525,28 @@ private:
     int64_t VL = vectorLen.getLiteral();
     VectorType vecType = VectorType::get({VL}, elementType);
     int64_t unrollFactor = (unrollJam && I.isLiteral()) ? I.getLiteral() : 1;
-    // Have to privatize CTmpType by unroll factor (1 if none).
-    MemRefType CTmpType = MemRefType::get({unrollFactor}, vecType);
-    assert(BUFFER_ALIGN >= gDefaultAllocAlign);
-    // TODO: alloca is good as it help simplify away this data structures (as it
-    // is only used as local temp, basically extensions of registers). However,
-    // there might be issues with non-removed alloca when they are not in the
-    // innermost loop. Still think its worth it having alloca as we want
-    // eventually all the refs to alloca to be register/spill access, not memory
-    // load/stores.
-    Value TmpC = create.mem.alignedAlloca(CTmpType, BUFFER_ALIGN);
 
     // Iterates over the I indices (j are simd dim).
     Value iSaved, kSaved;
     LiteralIndexExpr zeroIE(0);
     Value iZero = create.math.constantIndex(0);
 
-    createAffine.forIE(
-        zeroIE, I, 1, [&](AffineBuilderKrnlMem &createAffine, Value i) {
+    createAffine.forLoopIE(zeroIE, I, 1,
+        [&](const AffineBuilderKrnlMem &createAffine, ValueRange loopInd) {
           MultiDialectBuilder<MathBuilder, VectorBuilder> create(createAffine);
+          Value i = loopInd[0];
           iSaved = i; // Saved for unroll and jam.
-          // Alloca temp vector TmpC and save C(i)/0.0 into it.
+          // Alloc temp vector TmpC and save C(i)/0.0 into it.
           Value initVal = create.vec.loadIE(vecType, C, cStart, {i, iZero});
           Value tmpCAccess = (unrollFactor > 1) ? i : zeroIE.getValue();
           createAffine.store(initVal, TmpC, tmpCAccess);
           // Sum over k.
-          createAffine.forIE(
-              zeroIE, K, 1, [&](AffineBuilderKrnlMem &createAffine, Value k) {
+          createAffine.forLoopIE(zeroIE, K, 1,
+              [&](const AffineBuilderKrnlMem &createAffine,
+                  ValueRange loopInd) {
                 MultiDialectBuilder<MathBuilder, VectorBuilder> create(
                     createAffine);
+                Value k = loopInd[0];
                 kSaved = k;
                 Value a = createAffine.loadIE(A, aStart, {i, k});
                 Value va = create.vec.broadcast(vecType, a);
@@ -551,8 +622,8 @@ private:
 }; // namespace krnl
 
 void populateLoweringKrnlMatmultOpPattern(TypeConverter &typeConverter,
-    RewritePatternSet &patterns, MLIRContext *ctx) {
-  patterns.insert<KrnlMatmulLowering>(typeConverter, ctx);
+    RewritePatternSet &patterns, MLIRContext *ctx, bool parallelEnabled) {
+  patterns.insert<KrnlMatmulLowering>(typeConverter, ctx, parallelEnabled);
 }
 
 } // namespace krnl

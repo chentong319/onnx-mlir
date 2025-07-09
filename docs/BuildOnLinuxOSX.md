@@ -15,13 +15,29 @@ Firstly, install MLIR (as a part of LLVM-Project):
 ``` bash
 git clone -n https://github.com/llvm/llvm-project.git
 # Check out a specific branch that is known to work with ONNX-MLIR.
-cd llvm-project && git checkout 20ed5b1f45871612570d3bd447121ac43e083c6a && cd ..
+cd llvm-project && git checkout 2c440232e261746970cdf6f74d6588464eecd48b && cd ..
 ```
 
 [same-as-file]: <> (utils/build-mlir.sh)
 ``` bash
 mkdir llvm-project/build
 cd llvm-project/build
+
+cmake -G Ninja ../llvm \
+   -DLLVM_ENABLE_PROJECTS="mlir;clang;openmp" \
+   -DLLVM_TARGETS_TO_BUILD="host" \
+   -DCMAKE_BUILD_TYPE=Release \
+   -DLLVM_ENABLE_ASSERTIONS=ON \
+   -DLLVM_ENABLE_RTTI=ON \
+   -DENABLE_LIBOMPTARGET=OFF \
+   -DLLVM_ENABLE_LIBEDIT=OFF
+
+cmake --build . -- ${MAKEFLAGS}
+cmake --build . --target check-mlir
+```
+
+To enable parallelization for onnx-mlir, llvm-project should be configured as
+```
 cmake -G Ninja ../llvm \
    -DLLVM_ENABLE_PROJECTS=mlir \
    -DLLVM_TARGETS_TO_BUILD="host" \
@@ -29,9 +45,6 @@ cmake -G Ninja ../llvm \
    -DLLVM_ENABLE_ASSERTIONS=ON \
    -DLLVM_ENABLE_RTTI=ON \
    -DLLVM_ENABLE_LIBEDIT=OFF
-
-cmake --build . -- ${MAKEFLAGS}
-cmake --build . --target check-mlir
 ```
 
 ## ONNX-MLIR (this project)
@@ -54,11 +67,15 @@ mkdir onnx-mlir/build && cd onnx-mlir/build
 if [[ -z "$pythonLocation" ]]; then
   cmake -G Ninja \
         -DCMAKE_CXX_COMPILER=/usr/bin/c++ \
+        -DCMAKE_BUILD_TYPE=Release \
+        -DLLVM_ENABLE_ASSERTIONS=ON \
         -DMLIR_DIR=${MLIR_DIR} \
         ..
 else
   cmake -G Ninja \
         -DCMAKE_CXX_COMPILER=/usr/bin/c++ \
+        -DCMAKE_BUILD_TYPE=Release \
+        -DLLVM_ENABLE_ASSERTIONS=ON \
         -DPython3_ROOT_DIR=$pythonLocation \
         -DMLIR_DIR=${MLIR_DIR} \
         ..

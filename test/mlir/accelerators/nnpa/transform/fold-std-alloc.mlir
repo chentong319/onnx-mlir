@@ -1,4 +1,6 @@
-// RUN: onnx-mlir-opt --mcpu=z16 --maccel=NNPA --fold-std-alloc %s -split-input-file | FileCheck %s
+// RUN: onnx-mlir-opt --march=z16 --maccel=NNPA --fold-std-alloc %s -split-input-file | FileCheck %s
+
+// -----
 
 func.func @should_fold() -> memref<3xi64> {
   %c0 = arith.constant 0 : index

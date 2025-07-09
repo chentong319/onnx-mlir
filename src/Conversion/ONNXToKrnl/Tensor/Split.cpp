@@ -46,9 +46,9 @@ LogicalResult ONNXSplitOpLoweringCommon(OP_TYPE splitOp, OP_ADAPTOR adaptor,
     // Convert the output type to MemRefType.
     Type convertedType =
         typeConverter->convertType(splitOp.getOutputs()[i].getType());
-    assert(convertedType && convertedType.isa<MemRefType>() &&
+    assert(convertedType && mlir::isa<MemRefType>(convertedType) &&
            "Failed to convert type to MemRefType");
-    MemRefType memRefType = convertedType.cast<MemRefType>();
+    MemRefType memRefType = mlir::cast<MemRefType>(convertedType);
     Value alloc =
         create.mem.alignedAlloc(memRefType, shapeHelper.getOutputDims(i));
     allocs.emplace_back(alloc);
@@ -64,12 +64,12 @@ LogicalResult ONNXSplitOpLoweringCommon(OP_TYPE splitOp, OP_ADAPTOR adaptor,
         rewriter, loc);
 
     ValueRange loopDef = create.krnl.defineLoops(rank);
-    SmallVector<IndexExpr, 4> lbs(rank, LiteralIndexExpr(0));
+    SmallVector<IndexExpr, 4> lbs(rank, LitIE(0));
 
     SmallVector<IndexExpr, 4> ubs;
     create.krnlIE.getShapeAsDims(allocs[i], ubs);
     create.krnl.iterateIE(loopDef, loopDef, lbs, ubs,
-        [&](KrnlBuilder &createKrnl, ValueRange indices) {
+        [&](const KrnlBuilder &createKrnl, ValueRange indices) {
           SmallVector<IndexExpr, 4> readIndices;
           for (uint64_t r = 0; r < rank; ++r) {
             DimIndexExpr readIndex(indices[r]);

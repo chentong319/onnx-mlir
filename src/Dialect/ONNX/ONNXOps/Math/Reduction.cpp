@@ -29,6 +29,9 @@ LogicalResult ONNXGenericReductionOpShapeHelper<OP_TYPE>::customComputeShape(
     DimsExpr &axes, int noopWithEmptyAxes) {
   typename OP_TYPE::Adaptor operandAdaptor(operands, op->getAttrDictionary());
   Value data = operandAdaptor.getData();
+  if (!hasShapeAndRank(data)) {
+    return failure();
+  }
   int64_t rank = createIE->getShapedTypeRank(data);
   // Normalize the axes: at present, we only support compile time axes, but
   // with keep_dim on, it might not be too difficult to generate the code.
@@ -104,7 +107,11 @@ LogicalResult ONNXGenericReductionOpShapeHelper<OP_TYPE>::computeShape() {
       createIE->getIntFromArrayAsSymbols(operandAdaptor.getAxes(), axes);
     } else {
       // When the axis is dynamic, try to infer the rank of output tensor
-      int64_t dataRank = createIE->getShapedTypeRank(operandAdaptor.getData());
+      const auto data = operandAdaptor.getData();
+      if (!hasShapeAndRank(data)) {
+        return failure();
+      }
+      int64_t dataRank = createIE->getShapedTypeRank(data);
       int64_t axlesSize = createIE->getArraySize(operandAdaptor.getAxes());
       if (!operandAdaptor.getKeepdims() && axlesSize < 0 /*undef shape*/) {
         // Even though we did not compute the shape in ShapeHelper, return
@@ -130,7 +137,7 @@ LogicalResult ONNXGenericReductionOpShapeHelper<OP_TYPE>::computeShape() {
       // there, from input putting question mark in there. Not sure if
       // successful, if it is, it should be generalized to all ops.
       OP_TYPE reduceOp = llvm::cast<OP_TYPE>(op);
-      if (reduceOp.getResult().getType().template isa<RankedTensorType>()) {
+      if (mlir::isa<RankedTensorType>(reduceOp.getResult().getType())) {
         // Have already some shapes, keep them in ShapeHelper
         DimsExpr outputDims;
         createIE->getShapeAsDims(reduceOp.getResult(), outputDims);
@@ -163,7 +170,7 @@ static LogicalResult inferShapeForReductionOps_old(OP_TYPE &op) {
     return success();
 
   ShapedType dataType =
-      operandAdaptor.getData().getType().template cast<ShapedType>();
+      mlir::cast<ShapedType>(operandAdaptor.getData().getType());
   ONNXGenericReductionOpShapeHelper<OP_TYPE> shapeHelper(op.getOperation(), {});
   return shapeHelper.computeShapeAndUpdateType(dataType.getElementType());
 }
@@ -181,7 +188,7 @@ static LogicalResult inferShapeForReductionOps(OP_TYPE &op) {
     return success();
 
   ShapedType dataType =
-      operandAdaptor.getData().getType().template cast<ShapedType>();
+      mlir::cast<ShapedType>(operandAdaptor.getData().getType());
   ONNXGenericReductionOpShapeHelper<OP_TYPE> shapeHelper(op.getOperation(), {});
   return shapeHelper.computeShapeAndUpdateType(dataType.getElementType());
 }

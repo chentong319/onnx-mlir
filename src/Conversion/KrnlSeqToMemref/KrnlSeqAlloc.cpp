@@ -41,12 +41,12 @@ public:
   LogicalResult matchAndRewrite(Operation *op, ArrayRef<Value> operands,
       ConversionPatternRewriter &rewriter) const override {
     KrnlSeqAllocOpAdaptor operandAdaptor(operands);
-    KrnlSeqAllocOp thisOp = dyn_cast<KrnlSeqAllocOp>(op);
+    KrnlSeqAllocOp thisOp = mlir::dyn_cast<KrnlSeqAllocOp>(op);
     Location loc = op->getLoc();
     MultiDialectBuilder<MathBuilder, MemRefBuilder> create(rewriter, loc);
 
     Value outputSeq = thisOp.getResult();
-    auto outputType = outputSeq.getType().cast<MemRefType>();
+    auto outputType = mlir::cast<MemRefType>(outputSeq.getType());
     Value alloc;
     if (outputType.isDynamicDim(0)) {
       llvm::SmallVector<Value, 4> length(operandAdaptor.getLength());

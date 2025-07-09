@@ -58,7 +58,7 @@ LogicalResult ONNXGenericRNNShapeHelper<OP_TYPE>::customComputeShape(
   // Get hidden size from hidden_size attribute.
   IndexExpr hiddenSize;
   if (operandAdaptor.getHiddenSize().has_value()) {
-    hiddenSize = LiteralIndexExpr(operandAdaptor.getHiddenSize().value());
+    hiddenSize = LitIE(operandAdaptor.getHiddenSize().value());
   } else {
     // Infer hidden_size from wShape and rShape if possible.
     if (rDims[2].isLiteral())
@@ -84,9 +84,9 @@ LogicalResult ONNXGenericRNNShapeHelper<OP_TYPE>::customComputeShape(
   IndexExpr numDir;
   if ((operandAdaptor.getDirection() == "forward") ||
       (operandAdaptor.getDirection() == "reverse"))
-    numDir = LiteralIndexExpr(1);
+    numDir = LitIE(1);
   else if (operandAdaptor.getDirection() == "bidirectional")
-    numDir = LiteralIndexExpr(2);
+    numDir = LitIE(2);
   else
     return op->emitError(
         "direction attribute must be one of the strings: forward, "
@@ -168,7 +168,8 @@ LogicalResult ONNXGRUOp::inferShapes(
       !hasShapeAndRank(getR())) {
     return success();
   }
-  Type elementType = getX().getType().cast<RankedTensorType>().getElementType();
+  Type elementType =
+      mlir::cast<RankedTensorType>(getX().getType()).getElementType();
   ONNXGRUOpShapeHelper shapeHelper(getOperation(), {});
   return shapeHelper.computeShapeAndUpdateType(elementType);
 }
@@ -183,7 +184,8 @@ LogicalResult ONNXLSTMOp::inferShapes(
       !hasShapeAndRank(getR())) {
     return success();
   }
-  Type elementType = getX().getType().cast<RankedTensorType>().getElementType();
+  Type elementType =
+      mlir::cast<RankedTensorType>(getX().getType()).getElementType();
   ONNXLSTMOpShapeHelper shapeHelper(getOperation(), {});
   return shapeHelper.computeShapeAndUpdateType(elementType);
 }
@@ -198,7 +200,8 @@ LogicalResult ONNXRNNOp::inferShapes(
       !hasShapeAndRank(getR())) {
     return success();
   }
-  Type elementType = getX().getType().cast<RankedTensorType>().getElementType();
+  Type elementType =
+      mlir::cast<RankedTensorType>(getX().getType()).getElementType();
   ONNXRNNOpShapeHelper shapeHelper(getOperation(), {});
   return shapeHelper.computeShapeAndUpdateType(elementType);
 }

@@ -43,9 +43,9 @@ struct ONNXShapeTransformOpLowering : public ConversionPattern {
     shapeHelper.computeShapeAndAssertOnFailure();
 
     // Input and output types.
-    MemRefType inputMemRefType = input.getType().cast<MemRefType>();
-    MemRefType outputMemRefType =
-        typeConverter->convertType(*op->result_type_begin()).cast<MemRefType>();
+    MemRefType inputMemRefType = mlir::cast<MemRefType>(input.getType());
+    MemRefType outputMemRefType = mlir::cast<MemRefType>(
+        typeConverter->convertType(*op->result_type_begin()));
     uint64_t inputRank = inputMemRefType.getRank();
     uint64_t outputRank = outputMemRefType.getRank();
 
@@ -55,12 +55,12 @@ struct ONNXShapeTransformOpLowering : public ConversionPattern {
 
     // Element-wise moving of data.
     ValueRange loopDef = create.krnl.defineLoops(inputRank);
-    SmallVector<IndexExpr, 4> lbs(inputRank, LiteralIndexExpr(0));
+    SmallVector<IndexExpr, 4> lbs(inputRank, LitIE(0));
     SmallVector<IndexExpr, 4> ubs;
     create.krnlIE.getShapeAsDims(input, ubs);
 
     create.krnl.iterateIE(loopDef, loopDef, lbs, ubs,
-        [&](KrnlBuilder &createKrnl, ValueRange inputIndices) {
+        [&](const KrnlBuilder &createKrnl, ValueRange inputIndices) {
           Value loadedVal = createKrnl.load(input, inputIndices);
           // Compute output indices by using affine map.
           SmallVector<Value, 4> outputIndices;

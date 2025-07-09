@@ -42,9 +42,9 @@ struct ONNXOneHotOpLowering : public OpConversionPattern<ONNXOneHotOp> {
 
     // Convert the output type to MemRefType.
     Type convertedType = typeConverter->convertType(*op->result_type_begin());
-    assert(convertedType && convertedType.isa<MemRefType>() &&
+    assert(convertedType && mlir::isa<MemRefType>(convertedType) &&
            "Failed to convert type to MemRefType");
-    MemRefType outputMemRefType = convertedType.cast<MemRefType>();
+    MemRefType outputMemRefType = mlir::cast<MemRefType>(convertedType);
 
     // Insert an allocation and deallocation for the output of this operation.
     Value alloc =
@@ -62,7 +62,8 @@ struct ONNXOneHotOpLowering : public OpConversionPattern<ONNXOneHotOp> {
     create.krnlIE.getShapeAsDims(indices, indicesUbs);
     ValueRange indicesLoopDef = create.krnl.defineLoops(indicesRank);
     create.krnl.iterateIE(indicesLoopDef, indicesLoopDef, indicesLbs,
-        indicesUbs, [&](KrnlBuilder createKrnl, ValueRange indicesLoopInd) {
+        indicesUbs,
+        [&](const KrnlBuilder createKrnl, ValueRange indicesLoopInd) {
           // Loop for all input values.
           MathBuilder createMath(createKrnl);
           // Input val is allowed to be any integer/float. Read and convert to
@@ -89,9 +90,8 @@ struct ONNXOneHotOpLowering : public OpConversionPattern<ONNXOneHotOp> {
           Value onValueIndexVal = onValueIndex.getValue();
           // Now we have the index that is on, iterate over the depth values
           // along axis, and set the right one to the value on.
-          ValueRange depthLoopDef = createKrnl.defineLoops(1);
-          createKrnl.iterateIE(depthLoopDef, depthLoopDef, {zeroIE}, {depth},
-              [&](KrnlBuilder createBuilder, ValueRange depthLoopInd) {
+          createKrnl.forLoopIE(zeroIE, depth, /*step*/ 1, /*par*/ false,
+              [&](const KrnlBuilder createBuilder, ValueRange depthLoopInd) {
                 MathBuilder createMath(createKrnl);
                 Value onCond = createMath.eq(depthLoopInd[0], onValueIndexVal);
                 Value res = createMath.select(onCond, onVal, offVal);

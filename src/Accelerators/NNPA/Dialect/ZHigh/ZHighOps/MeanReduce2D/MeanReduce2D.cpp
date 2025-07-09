@@ -38,8 +38,8 @@ LogicalResult ZHighMeanReduce2DOpShapeHelper::computeShape() {
 
   // Input is NHWC, and H and W are reduction dimensions.
   outputDims.emplace_back(inputDims[0]);
-  outputDims.emplace_back(LiteralIndexExpr(1));
-  outputDims.emplace_back(LiteralIndexExpr(1));
+  outputDims.emplace_back(LitIE(1));
+  outputDims.emplace_back(LitIE(1));
   outputDims.emplace_back(inputDims[3]);
 
   // Save the final result.
@@ -52,11 +52,11 @@ LogicalResult ZHighMeanReduce2DOpShapeHelper::computeShape() {
 //===----------------------------------------------------------------------===//
 
 LogicalResult ZHighMeanReduce2DOp::inferShapes(
-    std::function<void(mlir::Region &)> doShapeInference) {
+    std::function<void(Region &)> doShapeInference) {
   if (!hasRankedType(getInput()))
     return success();
 
-  auto inputType = getInput().getType().cast<RankedTensorType>();
+  auto inputType = mlir::cast<RankedTensorType>(getInput().getType());
   ZHighMeanReduce2DOpShapeHelper shapeHelper(getOperation());
   return shapeHelper.computeShapeAndUpdateType(
       inputType.getElementType(), inputType.getEncoding());

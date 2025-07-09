@@ -39,7 +39,7 @@ std::vector<Type> ONNXLoopOp::resultTypeInference() {
       resultTypes.push_back(ty);
     } else { // scan output
       // Erase any rank and shape. Shape inference will add a leading dimension.
-      Type elementType = cast<ShapedType>(ty).getElementType();
+      Type elementType = mlir::cast<ShapedType>(ty).getElementType();
       resultTypes.push_back(UnrankedTensorType::get(elementType));
     }
   }
@@ -99,7 +99,7 @@ LogicalResult ONNXLoopOp::inferShapes(
   auto bodyScanOutputTys = llvm::drop_begin(bodyOuputTys, numCarried);
   for (auto [opScanOutput, ty] : llvm::zip(scan_outputs(), bodyScanOutputTys)) {
     // TODO: Handle SeqType, OptType.
-    if (auto rankedTy = ty.dyn_cast<RankedTensorType>()) {
+    if (auto rankedTy = mlir::dyn_cast<RankedTensorType>(ty)) {
       SmallVector<int64_t, 4> unsqueezedShape(rankedTy.getShape());
       // Note that we may know the extent of the scan output leading
       // dimension, which is very likely just the trip count specified as an

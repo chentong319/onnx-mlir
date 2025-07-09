@@ -11,8 +11,8 @@
 //
 //===----------------------------------------------------------------------===//
 
-#ifndef DLF16_TO_F32_TD 
-#define DLF16_TO_F32_TD 
+#ifndef DLF16_TO_F32_TD
+#define DLF16_TO_F32_TD
 
 #ifndef OP_BASE
 include "src/Accelerators/NNPA/Dialect/ZHigh/ZHigh.td"
@@ -31,16 +31,16 @@ include "src/Accelerators/NNPA/Dialect/ZHigh/ZHighOps/OpHelper.td"
 /// >;
 
 def GetTypeInDLF16: NativeCodeCall<
-  "RankedTensorType::get($0.getType().cast<ShapedType>().getShape(), $_builder.getF16Type())"
+  "RankedTensorType::get(mlir::cast<ShapedType>($0.getType()).getShape(), $_builder.getF16Type())"
 >;
 
 //===----------------------------------------------------------------------===//
-// DRR patterns 
+// DRR patterns
 //===----------------------------------------------------------------------===//
 
 // zhigh.DLF16ToF32 (zhigh.F32ToDLF16(%X)) = %X
 def ConversionRemovalPattern : Pat<
-  (ZHighDLF16ToF32Op (ZHighF32ToDLF16Op $arg)),
+  (ZHighDLF16ToF32Op (ZHighF32ToDLF16Op $arg, $saturation)),
   (replaceWithValue $arg)
 >;
 

@@ -47,8 +47,8 @@ struct ONNXConcatShapeTransposeOpLowering
     unsigned numInputs = op->getNumOperands();
     Value firstInput = adaptor.getInputs().front();
     ArrayRef<int64_t> commonShape =
-        firstInput.getType().cast<ShapedType>().getShape();
-    // firstInput.getType().cast<ShapedType>().getElementType();
+        mlir::cast<ShapedType>(firstInput.getType()).getShape();
+    // mlir::cast<ShapedType>(firstInput.getType()).getElementType();
     uint64_t rank = commonShape.size();
     int64_t axis = adaptor.getAxis();
 
@@ -99,7 +99,7 @@ struct ONNXConcatShapeTransposeOpLowering
 
     // Alloc and set value for ShapeOp output
     auto convertedShapeType =
-        typeConverter->convertType(outputShapeType).cast<MemRefType>();
+        mlir::cast<MemRefType>(typeConverter->convertType(outputShapeType));
     Value shapeAlloc = create.mem.alignedAlloc(
         convertedShapeType, shapeHelper.getOutputDims());
     Type elementType = convertedShapeType.getElementType();
@@ -114,7 +114,8 @@ struct ONNXConcatShapeTransposeOpLowering
     DimsExpr outputTransposeDims = shapeHelper.getOutputDims(1);
     ArrayAttr permAttr = adaptor.getPermAttr();
     Type t = op->getResultTypes()[1];
-    auto outputTransposeType = typeConverter->convertType(t).cast<MemRefType>();
+    auto outputTransposeType =
+        mlir::cast<MemRefType>(typeConverter->convertType(t));
     Value alloc =
         create.mem.alignedAlloc(outputTransposeType, outputTransposeDims);
 
@@ -124,7 +125,7 @@ struct ONNXConcatShapeTransposeOpLowering
     // optimization. Difference may come from constant vs. dynamic, or dynamic
     // dim of different inputs.
     SmallVector<IndexExpr, 4> commonUB = outputConcatDims;
-    IndexExpr accumulatedOffset = LiteralIndexExpr(0);
+    IndexExpr accumulatedOffset = LitIE(0);
     for (unsigned int i = 0; i < numInputs; ++i) {
       // Since the accumulatedOffsetValue will be used in a nested
       // IndexExprScope, we get the Value of this IndexExpr and pass it as a
@@ -133,13 +134,13 @@ struct ONNXConcatShapeTransposeOpLowering
       OpBuilder::InsertionGuard insertGuard(rewriter);
       // Create loop.
       ValueRange loopDef = create.krnl.defineLoops(rank);
-      SmallVector<IndexExpr, 4> lbs(rank, LiteralIndexExpr(0));
+      SmallVector<IndexExpr, 4> lbs(rank, LitIE(0));
       SmallVector<IndexExpr, 4> ubs;
       create.krnlIE.getShapeAsDims(operands[i], ubs);
       // For each input, only the dimension 'axis' is different
       commonUB[axis] = ubs[axis];
       create.krnl.iterateIE(loopDef, loopDef, lbs, commonUB,
-          [&](KrnlBuilder &createKrnl, ValueRange loopInd) {
+          [&](const KrnlBuilder &createKrnl, ValueRange loopInd) {
             // Indices for the read and write.
             SmallVector<Value, 4> readIndices, writeIndices;
             for (unsigned int r = 0; r < rank; ++r) {
@@ -147,9 +148,8 @@ struct ONNXConcatShapeTransposeOpLowering
                 writeIndices.emplace_back(loopInd[r]);
               else {
                 IndexExprScope IEScope(&rewriter, loc);
-                IndexExpr writeOffset = DimIndexExpr(loopInd[r]);
-                IndexExpr accumulatedOffsetIE =
-                    SymbolIndexExpr(accumulatedOffsetValue);
+                IndexExpr writeOffset = DimIE(loopInd[r]);
+                IndexExpr accumulatedOffsetIE = SymIE(accumulatedOffsetValue);
                 writeOffset = writeOffset + accumulatedOffsetIE;
                 writeIndices.emplace_back(writeOffset.getValue());
               }

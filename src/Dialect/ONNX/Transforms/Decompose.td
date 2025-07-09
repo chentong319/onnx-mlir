@@ -32,7 +32,7 @@ def KeepdimsTrue
                      "/*isSigned=*/true), APInt(64, 1, /*isSigned=*/true))">;
 
 def KeepdimsIsTrue
-    : Constraint<CPred<"$_self.cast<IntegerAttr>().getSInt() == 1">,
+    : Constraint<CPred<"mlir::cast<IntegerAttr>($_self).getSInt() == 1">,
           "keepdims attribute is true">;
 
 def ONNXConstantOpNormalize: NativeCodeCall<
@@ -42,10 +42,10 @@ def AttributeIsNull : Constraint<CPred<"! ($_self)">, "Attribute is null">;
 
 def AttributeIsNotNull : Constraint<CPred<"($_self)">, "Attribute is not null">;
 
-def HasFloatType : Constraint<CPred<"(($_self).getType().dyn_cast<ShapedType>()"
+def HasFloatType : Constraint<CPred<"(mlir::dyn_cast<ShapedType>(($_self).getType())"
                                     ".getElementType().isF32())">>;
 
-def IsNoneType : Constraint<CPred<"(($_self).getType().isa<NoneType>())">>;
+def IsNoneType : Constraint<CPred<"mlir::isa<NoneType>(($_self).getType())">>;
 
 def GetNullAttr : NativeCodeCall<"Attribute()">;
 
@@ -68,8 +68,19 @@ def createScalarDenseAttrRank0
 // Create a scalar DenseElementsAttr of tensor<dtype> from an ElementsAttr.
 // The input ElementsAttr must have only one element. Otherwise only the first
 // element is used to create the scalar DenseElementsAttr
-def ReshapeElementsAttrToRank0 : NativeCodeCall<
-    "onnx_mlir::OnnxElementsAttrBuilder($0.getContext()).reshape(cast<ElementsAttr>($0), {})">;
+// When no attribute is provided ($1 is nullptr), then a default value attribute
+// is created (float32 0.0) according to ONNX specs.
+def ReshapeElementsAttrToRank0WithDefaultValue: NativeCodeCall<
+    "onnx_mlir::reshapeElementsAttrToRank0WithDefaultValue($_builder, $0, $1)">;
+
+def ReplaceSequenceAt :  NativeCodeCall<
+    "onnx_mlir::replaceSequenceAt($_builder, $_loc, $0)">;
+
+def UpgradeGridSampleV16Mode :  NativeCodeCall<
+    "onnx_mlir::upgradeGridSampleV16Mode($_builder, $0)">;
+    
+def CanSequenceAtBeReplaced :
+   Constraint<CPred<"::onnx_mlir::canSequenceAtBeReplaced($_self)">, "check whether the SequenceAt can be replaced with split">;
 
 // Create a DenseElementsAttr from a single attribute.
 def createDenseArrayAttrFromSingleAttr
@@ -97,7 +108,12 @@ def createSequenceConstructOp : NativeCodeCall<
 
 def ONNXDataType : NativeCodeCall<
   "IntegerAttr::get($_builder.getIntegerType(64, /*isSigned=*/true), "
-  "::onnx_mlir::mlirTypeToOnnxType($0.getType().front().cast<ShapedType>().getElementType()))">;
+  "::onnx_mlir::mlirTypeToOnnxType(mlir::cast<ShapedType>($0.getType().front()).getElementType()))">;
+
+// Check if value has a type that is ranked with a shape.
+def HasRankAndShape:
+  Constraint<CPred<"::onnx_mlir::isRankedShapedType($_self.getType())">,
+  "A value has rank and shape">;
 
 //===----------------------------------------------------------------------===//
 // ONNXReduceL1Op %X = ONNXReduceSumOp (ONNXAbsOp %X)
@@ -226,7 +242,7 @@ def UpsamplePattern : Pat<
   (ONNXUpsampleOp $x, $scales, $mode),
   (ONNXResizeOp $x, (CreateNoneValue), $scales, (CreateNoneValue),
      (GetNullIntegerAttr), (GetNullArrayAttr), (GetNullStringAttr),
-     (GetNullFloatAttr), (GetNullIntegerAttr), (GetNullFloatAttr), (GetNullStringAttr), 
+     (GetNullFloatAttr), (GetNullIntegerAttr), (GetNullFloatAttr), (GetNullStringAttr),
      $mode, (GetNullFloatAttr))
 >;
 
@@ -235,7 +251,7 @@ def UpsampleV7Pattern : Pat<
   (ONNXResizeOp $x, (CreateNoneValue),
      (ONNXConstantOpFromDenseAttr(createDenseArrayAttr $scales)),
      (CreateNoneValue), (GetNullIntegerAttr), (GetNullArrayAttr), (GetNullStringAttr),
-     (GetNullFloatAttr), (GetNullIntegerAttr), (GetNullFloatAttr), (GetNullStringAttr), 
+     (GetNullFloatAttr), (GetNullIntegerAttr), (GetNullFloatAttr), (GetNullStringAttr),
      $mode, (GetNullFloatAttr))
 >;
 
@@ -354,6 +370,12 @@ def ClipV12Pattern : Pat<
   (ONNXClipOp $x, $min, $max)
 >;
 
+// Rewrite GridSample 16 to GridSample 22
+def GridSampleV16Pattern : Pat<
+  (ONNXGridSampleV16Op $x, $grid, $align_corners, $mode, $padding_mode),
+  (ONNXGridSampleOp $x, $grid, $align_corners, (UpgradeGridSampleV16Mode $mode), $padding_mode)
+>;
+
 def DFTV17Pattern : Pat<
   (ONNXDFTV17Op $x, $dft_length, $axis, $inverse, $onesided),
   (ONNXDFTOp $x, $dft_length, (ONNXConstantOpFromDenseAttr(createScalarDenseAttrRank0 $axis)), $inverse, $onesided)
@@ -400,7 +422,7 @@ def ScatterPattern : Pat<
 >;
 
 //===----------------------------------------------------------------------===//
-// ONNXReduceL1V13Op %X -> ONNXReduceL1Op %X = 
+// ONNXReduceL1V13Op %X -> ONNXReduceL1Op %X =
 //===----------------------------------------------------------------------===//
 def ReduceL1V13OpPattern1
     : Pat<(ONNXReduceL1V13Op $oprd, $axes, $keepdims),
@@ -416,7 +438,7 @@ def ReduceL1V13OpPattern2
           [], [], (addBenefit 0)>;
 
 //===----------------------------------------------------------------------===//
-// ONNXReduceL2V13Op %X -> ONNXReduceL2Op %X = 
+// ONNXReduceL2V13Op %X -> ONNXReduceL2Op %X =
 //===----------------------------------------------------------------------===//
 def ReduceL2V13OpPattern1
     : Pat<(ONNXReduceL2V13Op $oprd, $axes, $keepdims),
@@ -432,7 +454,7 @@ def ReduceL2V13OpPattern2
           [], [], (addBenefit 0)>;
 
 //===----------------------------------------------------------------------===//
-// ONNXReduceLogSumV13Op %X -> ONNXReduceLogSumOp %X = 
+// ONNXReduceLogSumV13Op %X -> ONNXReduceLogSumOp %X =
 //===----------------------------------------------------------------------===//
 def ReduceLogSumV13OpPattern1
     : Pat<(ONNXReduceLogSumV13Op $oprd, $axes, $keepdims),
@@ -448,7 +470,7 @@ def ReduceLogSumV13OpPattern2
           [], [], (addBenefit 0)>;
 
 //===----------------------------------------------------------------------===//
-// ONNXReduceLogSumExpV13Op %X -> ONNXReduceLogSumExpOp %X = 
+// ONNXReduceLogSumExpV13Op %X -> ONNXReduceLogSumExpOp %X =
 //===----------------------------------------------------------------------===//
 def ReduceLogSumExpV13OpPattern1
     : Pat<(ONNXReduceLogSumExpV13Op $oprd, $axes, $keepdims),
@@ -464,7 +486,7 @@ def ReduceLogSumExpV13OpPattern2
           [], [], (addBenefit 0)>;
 
 //===----------------------------------------------------------------------===//
-// ONNXReduceSumSquareV13Op %X -> ONNXReduceSumSquareOp %X = 
+// ONNXReduceSumSquareV13Op %X -> ONNXReduceSumSquareOp %X =
 //===----------------------------------------------------------------------===//
 def ReduceSumSquareV13OpPattern1
     : Pat<(ONNXReduceSumSquareV13Op $oprd, $axes, $keepdims),
@@ -537,7 +559,7 @@ def ConvTransposeOpPattern1: Pattern<
        (GetNullStringAttr), $dilation, $group, $kernel_shape, $new_pads, $strides),
     (insertAdditionalPadsConvTranspose $conv_res, $res)
    ],
-   [(ShouldDecomposeConvTransposeOp:$res), (HasUnitStrides:$strides)], [],
+   [(HasRankAndShape:$res), (ShouldDecomposeConvTransposeOp:$res), (HasUnitStrides:$strides)], [],
    (addBenefit 1)
 >;
 
@@ -554,7 +576,7 @@ def ConvTransposeOpPattern2: Pattern<
     (insertAdditionalPadsConvTranspose
         $conv_res, $res)
    ],
-   [(ShouldDecomposeConvTransposeOp:$res)], [],
+   [(HasRankAndShape:$res), (ShouldDecomposeConvTransposeOp:$res)], [],
    (addBenefit 0)
 >;
 
@@ -565,7 +587,7 @@ def ConvTransposeOpPattern2: Pattern<
 
 def ConstantOfShapePattern: Pat<
   (ONNXConstantOfShapeOp:$res $shape, $value),
-  (ONNXExpandOp (ONNXConstantOpFromDenseAttr (ReshapeElementsAttrToRank0 $value)), 
+  (ONNXExpandOp (ONNXConstantOpFromDenseAttr (ReshapeElementsAttrToRank0WithDefaultValue $shape, $value)),
                 $shape)
 >;
 
@@ -613,6 +635,18 @@ def ConstantOpNormalizationPattern6: Pat<
        $intsAttr, $stringAttr, $stringsAttr),
    (ONNXConstantOpNormalize $res, $stringsAttr),
    [(AttributeIsNotNull:$stringsAttr)]
+>;
+
+// Optimize for the pattern coming from torch.nn.LSTM exported from pytorch
+//     %32 = "onnx.SplitToSequence"(%30, %27) {axis = 0 : si64, keepdims = 0 : si64, onnx_node_name = "n1"} : (tensor<1x1x100xf32>, tensor<i64>) -> !onnx.Seq<tensor<1x1x100xf32>>
+//    %33 = "onnx.SequenceAt"(%32, %26) {onnx_node_name = "n0"} : (!onnx.Seq<tensor<1x1x100xf32>>, tensor<i64>) -> tensor<1x100xf32>
+// When shape and size/axis related value are constant, this sequence of code
+// can be translated into onnx.slice
+
+def ReplaceSequenceAtPattern: Pat<
+   (ONNXSequenceAtOp:$res $seq, $position),
+   (ReplaceSequenceAt $res),
+   [(CanSequenceAtBeReplaced:$res)]
 >;
 
 #endif // ONNX_DECOMPOSE

@@ -79,8 +79,8 @@ void getDimsInt64(Value val, SmallVectorImpl<int64_t> &result) {
   SmallVector<Value, 4> dims;
   getDims(val, dims);
   for (Value v : dims) {
-    if (auto constOp = dyn_cast<ONNXConstantOp>(v.getDefiningOp())) {
-      auto valueAttr = constOp.getValueAttr().cast<ElementsAttr>();
+    if (auto constOp = mlir::dyn_cast<ONNXConstantOp>(v.getDefiningOp())) {
+      auto valueAttr = mlir::cast<ElementsAttr>(constOp.getValueAttr());
       int64_t dim = valueAttr.getSplatValue<int64_t>();
       result.emplace_back(dim);
     } else {
@@ -96,7 +96,7 @@ Value emitConcatOpForDims(MultiDialectBuilder<OnnxBuilder> create,
   if (rank == 1) {
     // Input is tensor<1xf32>, squeeze it if the output type is scalar i.e.
     // tensor<f32>
-    if (auto tensorType = outputType.dyn_cast<RankedTensorType>()) {
+    if (auto tensorType = mlir::dyn_cast<RankedTensorType>(outputType)) {
       if (tensorType.getRank() == 0) {
         Value zero = create.onnx.constantInt64({0});
         return create.onnx.squeeze(outputType, inputs[0], zero);
@@ -505,10 +505,10 @@ void SimplifyShapeRelatedOpsPass::topDownShapeSimplification(
   ONNXUnsqueezeV11Op::getCanonicalizationPatterns(patterns, context);
 
   GreedyRewriteConfig config;
-  config.useTopDownTraversal = true;
+  config.setUseTopDownTraversal(true);
 
   // Simplify shape-related ops.
-  if (failed(applyPatternsAndFoldGreedily(moduleOp, std::move(patterns))))
+  if (failed(applyPatternsGreedily(moduleOp, std::move(patterns))))
     signalPassFailure();
 }
 

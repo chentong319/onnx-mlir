@@ -30,7 +30,7 @@ namespace {
 
 void handleIncludePadAttr(
     ConversionPatternRewriter &rewriter, Operation *op, Value input) {
-  mlir::Location loc = op->getLoc();
+  Location loc = op->getLoc();
 
   // Get shape.
   IndexExprBuilderForTosa createTosaIE(rewriter, loc);
@@ -46,9 +46,9 @@ void handleIncludePadAttr(
   TosaBuilder tosaBuilder(rewriter, loc);
   Value padding = tosa::buildOnnxToTosaPaddingConstOp(
       rewriter, intValues, loc, {0, 0, 0, 0}, {});
-  auto constTosaTensor = tosaBuilder.getSplattedConst(0.0);
+  auto constTosaTensor = tosaBuilder.getSplattedConst(0.0, {1});
 
-  auto inputType = input.getType().cast<mlir::TensorType>();
+  auto inputType = mlir::cast<mlir::TensorType>(input.getType());
   auto padOp = tosa::CreateOpAndInfer<mlir::tosa::PadOp>(rewriter, loc,
       mlir::RankedTensorType::get(
           llvm::SmallVector<int64_t, 4>(

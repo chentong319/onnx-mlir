@@ -26,7 +26,7 @@ namespace onnx_mlir {
 
 namespace {
 bool isEmptyTensor(Value input) {
-  if (ShapedType shapedType = dyn_cast<ShapedType>(input.getType())) {
+  if (ShapedType shapedType = mlir::dyn_cast<ShapedType>(input.getType())) {
     return shapedType.hasStaticShape() && shapedType.getNumElements() == 0;
   } else {
     return false;
@@ -48,9 +48,13 @@ LogicalResult ONNXResizeOpShapeHelper::computeShape() {
   ONNXResizeOpAdaptor operandAdaptor(operands, cast<ONNXResizeOp>(op));
   if (operandAdaptor.getAxes().has_value())
     return op->emitOpError("axes are unsupported");
-  uint64_t rank = createIE->getShapedTypeRank(operandAdaptor.getX());
+  const auto x = operandAdaptor.getX();
+  if (!hasShapeAndRank(x)) {
+    return failure();
+  }
+  uint64_t rank = createIE->getShapedTypeRank(x);
   DimsExpr inputDims, outputDims;
-  createIE->getShapeAsDims(operandAdaptor.getX(), inputDims);
+  createIE->getShapeAsDims(x, inputDims);
   bool scalesIsAbsent = isAbsent(operandAdaptor.getScales());
   if (!scalesIsAbsent) {
     // Read and save scales as float.
@@ -94,12 +98,13 @@ LogicalResult ONNXResizeOpShapeHelper::computeShape() {
 //===----------------------------------------------------------------------===//
 
 LogicalResult ONNXResizeOp::verify() {
-  // Cannot verify if scales or sizes have unknown shapes.
-  if (auto scalesShapedType = dyn_cast<ShapedType>(getScales().getType())) {
+  // Cannot verify if scales or sizes have unknown sha∑pes.
+  if (auto scalesShapedType =
+          mlir::dyn_cast<ShapedType>(getScales().getType())) {
     if (!scalesShapedType.hasStaticShape())
       return success();
   }
-  if (auto sizesShapedType = dyn_cast<ShapedType>(getSizes().getType())) {
+  if (auto sizesShapedType = mlir::dyn_cast<ShapedType>(getSizes().getType())) {
     if (!sizesShapedType.hasStaticShape())
       return success();
   }
@@ -124,7 +129,8 @@ LogicalResult ONNXResizeOp::inferShapes(
   if (!hasShapeAndRank(getX()))
     return success();
 
-  Type elementType = getX().getType().cast<RankedTensorType>().getElementType();
+  Type elementType =
+      mlir::cast<RankedTensorType>(getX().getType()).getElementType();
   ONNXResizeOpShapeHelper shapeHelper(getOperation(), {});
   return shapeHelper.computeShapeAndUpdateType(elementType);
 }

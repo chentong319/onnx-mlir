@@ -7,7 +7,7 @@ func.func @test_reshape(%arg0 : tensor<?x10xf32>, %arg1 : tensor<4xi64>) -> tens
   "func.return"(%0) : (tensor<*xf32>) -> ()
 
 // CHECK-LABEL: llvm.func @test_reshape
-// CHECK:    [[OLD_MEMREF:%.+]] = llvm.mlir.undef : !llvm.struct<(ptr, ptr, i64, array<2 x i64>, array<2 x i64>)>
+// CHECK:    [[OLD_MEMREF:%.+]] = llvm.mlir.poison : !llvm.struct<(ptr, ptr, i64, array<2 x i64>, array<2 x i64>)>
 // CHECK:    [[INSERT_1_:%.+]] = llvm.insertvalue {{.*}}, [[OLD_MEMREF]][0] : !llvm.struct<(ptr, ptr, i64, array<2 x i64>, array<2 x i64>)>
 // CHECK:    [[INSERT_2_:%.+]] = llvm.insertvalue {{.*}}, [[INSERT_1_]][1] : !llvm.struct<(ptr, ptr, i64, array<2 x i64>, array<2 x i64>)>
 // CHECK:    [[INSERT_3_:%.+]] = llvm.insertvalue {{.*}}, [[INSERT_2_]][2] : !llvm.struct<(ptr, ptr, i64, array<2 x i64>, array<2 x i64>)>
@@ -17,11 +17,9 @@ func.func @test_reshape(%arg0 : tensor<?x10xf32>, %arg1 : tensor<4xi64>) -> tens
 // CHECK-DAG:[[INSERT_7_:%.+]] = llvm.insertvalue {{.*}}, [[INSERT_6_]][4, 1] : !llvm.struct<(ptr, ptr, i64, array<2 x i64>, array<2 x i64>)>
 
 // COM: Check that there is no copy but only a new MemRef with a new view, i.e. new sizes and strides.
-// CHECK-DAG:  [[NEW_MEMREF:%.+]] = llvm.mlir.undef : !llvm.struct<(ptr, ptr, i64, array<4 x i64>, array<4 x i64>)>
-// CHECK-DAG:  [[EXTRACT_1:%.+]] = llvm.extractvalue [[INSERT_7_]][0] : !llvm.struct<(ptr, ptr, i64, array<2 x i64>, array<2 x i64>)>
-// CHECK-DAG:  [[EXTRACT_2:%.+]] = llvm.extractvalue [[INSERT_7_]][1] : !llvm.struct<(ptr, ptr, i64, array<2 x i64>, array<2 x i64>)>
-// CHECK:      [[INSERT_8_:%.+]] = llvm.insertvalue [[EXTRACT_1]], [[NEW_MEMREF]][0] : !llvm.struct<(ptr, ptr, i64, array<4 x i64>, array<4 x i64>)>
-// CHECK-DAG:  [[INSERT_9_:%.+]] = llvm.insertvalue [[EXTRACT_2]], [[INSERT_8_]][1] : !llvm.struct<(ptr, ptr, i64, array<4 x i64>, array<4 x i64>)>
+// CHECK-DAG:  [[NEW_MEMREF:%.+]] = llvm.mlir.poison : !llvm.struct<(ptr, ptr, i64, array<4 x i64>, array<4 x i64>)>
+// CHECK:      [[INSERT_8_:%.+]] = llvm.insertvalue {{.*}}, [[NEW_MEMREF]][0] : !llvm.struct<(ptr, ptr, i64, array<4 x i64>, array<4 x i64>)>
+// CHECK-DAG:  [[INSERT_9_:%.+]] = llvm.insertvalue {{.*}}, [[INSERT_8_]][1] : !llvm.struct<(ptr, ptr, i64, array<4 x i64>, array<4 x i64>)>
 // CHECK-DAG:  [[C0:%.+]] = llvm.mlir.constant(0 : index) : i64
 // CHECK:      [[INSERT_10_:%.+]] = llvm.insertvalue [[C0]], [[INSERT_9_]][2] : !llvm.struct<(ptr, ptr, i64, array<4 x i64>, array<4 x i64>)>
 // CHECK:      [[INSERT_11_:%.+]] = llvm.insertvalue {{.*}}, [[INSERT_10_]][3, 0] : !llvm.struct<(ptr, ptr, i64, array<4 x i64>, array<4 x i64>)>

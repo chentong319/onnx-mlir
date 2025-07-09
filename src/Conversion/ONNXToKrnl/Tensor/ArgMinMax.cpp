@@ -63,15 +63,15 @@ struct ONNXArgMinMaxOpLowering : public OpConversionPattern<ARG_OP> {
     // Convert the reduced output type to MemRefType.
     Type convertedType =
         this->typeConverter->convertType(*op->result_type_begin());
-    assert(convertedType && convertedType.isa<MemRefType>() &&
+    assert(convertedType && mlir::isa<MemRefType>(convertedType) &&
            "Failed to convert type to MemRefType");
-    MemRefType reducedMemRefType = convertedType.cast<MemRefType>();
+    MemRefType reducedMemRefType = mlir::cast<MemRefType>(convertedType);
     Type reducedElementType = reducedMemRefType.getElementType();
     int64_t reducedRank = reducedMemRefType.getRank();
 
     // data input
     Value data = adaptor.getData();
-    MemRefType dataType = data.getType().cast<MemRefType>();
+    MemRefType dataType = mlir::cast<MemRefType>(data.getType());
     int64_t dataRank = dataType.getRank();
 
     // axis & keepdims attribute
@@ -98,19 +98,19 @@ struct ONNXArgMinMaxOpLowering : public OpConversionPattern<ARG_OP> {
 
     // 1. Krnl loops to initialize the result.
     ValueRange initLoopDef = create.krnl.defineLoops(reducedRank);
-    SmallVector<IndexExpr, 4> initLbs(reducedRank, LiteralIndexExpr(0));
+    SmallVector<IndexExpr, 4> initLbs(reducedRank, LitIE(0));
     create.krnl.iterateIE(initLoopDef, initLoopDef, initLbs, outputDims,
-        [&](KrnlBuilder &createKrnl, ValueRange loopInd) {
+        [&](const KrnlBuilder &createKrnl, ValueRange loopInd) {
           createKrnl.store(minusOne, alloc, loopInd);
         });
 
     // 2. Krnl loop to calculate arg min/arg max.
     ValueRange calcLoopDef = create.krnl.defineLoops(dataRank);
-    SmallVector<IndexExpr, 4> lbs(dataRank, LiteralIndexExpr(0));
+    SmallVector<IndexExpr, 4> lbs(dataRank, LitIE(0));
     SmallVector<IndexExpr, 4> ubs;
     create.krnlIE.getShapeAsDims(data, ubs);
     create.krnl.iterateIE(calcLoopDef, calcLoopDef, lbs, ubs,
-        [&](KrnlBuilder &createKrnl, ValueRange loopInd) {
+        [&](const KrnlBuilder &createKrnl, ValueRange loopInd) {
           // Handle the operation:
           SmallVector<Value, 4> inLoopIVs, outLoopIVs, dstLoopIVs;
 

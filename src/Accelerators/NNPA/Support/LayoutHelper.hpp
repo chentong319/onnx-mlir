@@ -4,13 +4,14 @@
 
 //===---------- LayoutHelper.hpp - NNPA Layout Helper ---------------------===//
 //
-// Copyright 2019-2022 The IBM Research Authors.
+// Copyright 2019-2024 The IBM Research Authors.
 //
 // =============================================================================
 //
 //===----------------------------------------------------------------------===//
 
-#pragma once
+#ifndef ONNX_MLIR_LAYOUT_HELPER_H
+#define ONNX_MLIR_LAYOUT_HELPER_H
 
 #include "mlir/IR/BuiltinAttributes.h"
 #include "mlir/IR/PatternMatch.h"
@@ -34,14 +35,22 @@ const std::string LAYOUT_ZRH = "ZRH";
 const std::string LAYOUT_BFICO = "BFICO";
 const std::string LAYOUT_BZRH = "BZRH";
 
+// Quantized transform type.
+const std::string QTYPE_DLFLOAT16 = "DLFLOAT16";
+const std::string QTYPE_INT8 = "INT8";
+const std::string QTYPE_WEIGHTS = "WEIGHTS";
+const std::string QTYPE_UNDEFINED = "UNDEFINED";
+
 zdnn_data_layouts convertLayoutAttrToZDNNDataLayout(
     int64_t rank, mlir::StringAttr layoutAttr);
 
 bool is2DLayout(mlir::StringAttr layout);
 bool is3DSLayout(mlir::StringAttr layout);
 bool is4DLayout(mlir::StringAttr layout);
+bool is4DSLayout(mlir::StringAttr layout);
 bool isNHWCLayout(mlir::StringAttr layout);
 
 mlir::StringAttr getNCHWLayoutAttr(mlir::PatternRewriter &rewriter);
 
 } // namespace onnx_mlir
+#endif

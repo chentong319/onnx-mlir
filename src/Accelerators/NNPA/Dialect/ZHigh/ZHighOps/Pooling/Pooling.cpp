@@ -94,11 +94,12 @@ template struct ZHighPoolingOpShapeHelper<ZHighAvgPool2DOp>;
 //===----------------------------------------------------------------------===//
 
 LogicalResult ZHighMaxPool2DOp::inferShapes(
-    std::function<void(mlir::Region &)> doShapeInference) {
+    std::function<void(Region &)> doShapeInference) {
   if (!hasRankedType(getInput()))
     return success();
 
-  RankedTensorType inputType = getInput().getType().cast<RankedTensorType>();
+  RankedTensorType inputType =
+      mlir::cast<RankedTensorType>(getInput().getType());
   ZHighPoolingOpShapeHelper<ZHighMaxPool2DOp> shapeHelper(getOperation());
   return shapeHelper.computeShapeAndUpdateType(
       inputType.getElementType(), inputType.getEncoding());
@@ -109,11 +110,12 @@ LogicalResult ZHighMaxPool2DOp::inferShapes(
 //===----------------------------------------------------------------------===//
 
 LogicalResult ZHighAvgPool2DOp::inferShapes(
-    std::function<void(mlir::Region &)> doShapeInference) {
+    std::function<void(Region &)> doShapeInference) {
   if (!hasRankedType(getInput()))
     return success();
 
-  RankedTensorType inputType = getInput().getType().cast<RankedTensorType>();
+  RankedTensorType inputType =
+      mlir::cast<RankedTensorType>(getInput().getType());
   ZHighPoolingOpShapeHelper<ZHighAvgPool2DOp> shapeHelper(getOperation());
   return shapeHelper.computeShapeAndUpdateType(
       inputType.getElementType(), inputType.getEncoding());

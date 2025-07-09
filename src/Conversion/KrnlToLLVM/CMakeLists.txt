@@ -12,6 +12,7 @@ add_onnx_mlir_library(OMKrnlToLLVM
   KrnlPrintTensor.cpp
   KrnlPrint.cpp
   KrnlRandomNormal.cpp
+  KrnlRoundEven.cpp
   KrnlStrlen.cpp
   KrnlStrncmp.cpp
   KrnlToLLVMHelper.cpp  
@@ -36,5 +37,6 @@ add_onnx_mlir_library(OMKrnlToLLVM
   MLIRSCFToControlFlow
   MLIRShapeToStandard
   MLIRVectorToLLVMPass
+  MLIRUBToLLVM
   onnx
   )

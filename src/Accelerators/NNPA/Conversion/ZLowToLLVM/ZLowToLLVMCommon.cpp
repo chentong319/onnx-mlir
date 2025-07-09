@@ -4,7 +4,7 @@
 
 //===---------- ZLowToLLVMCommon.hpp - Lowering from ZLow to LLVM ---------===//
 //
-// Copyright 2019-2020 The IBM Research Authors.
+// Copyright 2019-2024 The IBM Research Authors.
 //
 // =============================================================================
 //
@@ -19,6 +19,7 @@
 #include "mlir/Dialect/LLVMIR/LLVMDialect.h"
 
 #include "src/Accelerators/NNPA/Conversion/ZLowToLLVM/ZLowToLLVMCommon.hpp"
+#include "src/Accelerators/NNPA/Support/LayoutHelper.hpp"
 #include "src/Conversion/KrnlToLLVM/KrnlToLLVMHelper.hpp"
 #include "src/Dialect/Mlir/DialectBuilder.hpp"
 #include "zdnn.h"
@@ -34,7 +35,7 @@ ApiRegistry RegisterAllApis(MLIRContext *context) {
   auto int16Ty = IntegerType::get(context, 16);
   auto int32Ty = IntegerType::get(context, 32);
   auto int64Ty = IntegerType::get(context, 64);
-  auto float32Ty = FloatType::getF32(context);
+  auto float32Ty = Float32Type::get(context);
 
   // Declare API type as an enum value, its string name and an LLVM Type
   // specifying its signature.
@@ -52,29 +53,39 @@ ApiRegistry RegisterAllApis(MLIRContext *context) {
     ApiSpec(API::ZDNN_INIT_PRE_TRANSFORMED_DESC, "zdnn_init_pre_transformed_desc", voidTy, {int64Ty, int64Ty, opaquePtrTy}, true),
     ApiSpec(API::ZDNN_GENERATE_TRANSFORMED_DESC, "zdnn_generate_transformed_desc", int32Ty, {opaquePtrTy, opaquePtrTy}, false),
     ApiSpec(API::ZDNN_GENERATE_TRANSFORMED_DESC_CONCATENATED, "zdnn_generate_transformed_desc_concatenated", int32Ty, {opaquePtrTy, int64Ty, opaquePtrTy}, false),
+    ApiSpec(API::ZDNN_GENERATE_QUANTIZED_TRANSFORMED_DESC, "zdnn_generate_quantized_transformed_desc", int32Ty, {opaquePtrTy, int64Ty, opaquePtrTy}, false),
     ApiSpec(API::ZDNN_GETSIZE_ZTENSOR, "zdnn_getsize_ztensor", int64Ty, {opaquePtrTy}, false),
     ApiSpec(API::ZDNN_TRANSFORM_ZTENSOR, "zdnn_transform_ztensor", int32Ty, {opaquePtrTy}, true),
+    ApiSpec(API::ZDNN_TRANSFORM_ZTENSOR_WITH_SATURATION, "zdnn_transform_ztensor_with_saturation", int32Ty, {opaquePtrTy}, true),
     ApiSpec(API::ZDNN_TRANSFORM_ORIGTENSOR, "zdnn_transform_origtensor", int32Ty, {opaquePtrTy, opaquePtrTy}, false),
+    ApiSpec(API::ZDNN_TRANSFORM_QUANTIZED_ZTENSOR, "zdnn_transform_quantized_ztensor", int32Ty, {opaquePtrTy, int64Ty, int64Ty, int64Ty, opaquePtrTy}, false),
     // Elementwise operations
-    ApiSpec(API::ZDNN_ADD, "zdnn_add_ext", int32Ty, {opaquePtrTy, opaquePtrTy, opaquePtrTy}, false),
-    ApiSpec(API::ZDNN_SUB, "zdnn_sub_ext", int32Ty, {opaquePtrTy, opaquePtrTy, opaquePtrTy}, false),
-    ApiSpec(API::ZDNN_MUL, "zdnn_mul_ext", int32Ty, {opaquePtrTy, opaquePtrTy, opaquePtrTy}, false),
-    ApiSpec(API::ZDNN_DIV, "zdnn_div_ext", int32Ty, {opaquePtrTy, opaquePtrTy, opaquePtrTy}, false),
-    ApiSpec(API::ZDNN_MIN, "zdnn_min_ext", int32Ty, {opaquePtrTy, opaquePtrTy, opaquePtrTy}, false),
-    ApiSpec(API::ZDNN_MAX, "zdnn_max_ext", int32Ty, {opaquePtrTy, opaquePtrTy, opaquePtrTy}, false),
-    ApiSpec(API::ZDNN_LOG, "zdnn_log_ext", int32Ty, {opaquePtrTy, opaquePtrTy}, false),
-    ApiSpec(API::ZDNN_EXP, "zdnn_exp_ext", int32Ty, {opaquePtrTy, opaquePtrTy}, false),
+    ApiSpec(API::ZDNN_ADD, "zdnnx_add", int32Ty, {opaquePtrTy, opaquePtrTy, opaquePtrTy}, false),
+    ApiSpec(API::ZDNN_SUB, "zdnnx_sub", int32Ty, {opaquePtrTy, opaquePtrTy, opaquePtrTy}, false),
+    ApiSpec(API::ZDNN_MUL, "zdnnx_mul", int32Ty, {opaquePtrTy, opaquePtrTy, opaquePtrTy}, false),
+    ApiSpec(API::ZDNN_DIV, "zdnnx_div", int32Ty, {opaquePtrTy, opaquePtrTy, opaquePtrTy}, false),
+    ApiSpec(API::ZDNN_MIN, "zdnnx_min", int32Ty, {opaquePtrTy, opaquePtrTy, opaquePtrTy}, false),
+    ApiSpec(API::ZDNN_MAX, "zdnnx_max", int32Ty, {opaquePtrTy, opaquePtrTy, opaquePtrTy}, false),
+    ApiSpec(API::ZDNN_LOG, "zdnnx_log", int32Ty, {opaquePtrTy, opaquePtrTy}, false),
+    ApiSpec(API::ZDNN_EXP, "zdnnx_exp", int32Ty, {opaquePtrTy, opaquePtrTy}, false),
+    ApiSpec(API::ZDNN_INVSQRT, "zdnnx_invsqrt", int32Ty, {opaquePtrTy, float32Ty, opaquePtrTy}, false),
+    ApiSpec(API::ZDNN_REDUCE, "zdnnx_reduce", int32Ty, {opaquePtrTy, opaquePtrTy, int64Ty, opaquePtrTy}, false),
     // Activation operations
-    ApiSpec(API::ZDNN_RELU, "zdnn_relu_ext", int32Ty, {opaquePtrTy, opaquePtrTy, opaquePtrTy}, false),
-    ApiSpec(API::ZDNN_TANH, "zdnn_tanh_ext", int32Ty, {opaquePtrTy, opaquePtrTy}, false),
-    ApiSpec(API::ZDNN_SIGMOID, "zdnn_sigmoid_ext", int32Ty, {opaquePtrTy, opaquePtrTy}, false),
-    ApiSpec(API::ZDNN_SOFTMAX, "zdnn_softmax_ext", int32Ty, {opaquePtrTy, opaquePtrTy, int64Ty, opaquePtrTy}, false),
+    ApiSpec(API::ZDNN_LEAKY_RELU, "zdnnx_leaky_relu", int32Ty, {opaquePtrTy, opaquePtrTy, float32Ty, opaquePtrTy}, false),
+    ApiSpec(API::ZDNN_RELU, "zdnnx_relu", int32Ty, {opaquePtrTy, opaquePtrTy, opaquePtrTy}, false),
+    ApiSpec(API::ZDNN_GELU, "zdnnx_gelu", int32Ty, {opaquePtrTy, opaquePtrTy}, false),
+    ApiSpec(API::ZDNN_TANH, "zdnnx_tanh", int32Ty, {opaquePtrTy, opaquePtrTy}, false),
+    ApiSpec(API::ZDNN_SIGMOID, "zdnnx_sigmoid", int32Ty, {opaquePtrTy, opaquePtrTy}, false),
+    ApiSpec(API::ZDNN_SOFTMAX, "zdnnx_softmax", int32Ty, {opaquePtrTy, opaquePtrTy, int64Ty, opaquePtrTy}, false),
+    ApiSpec(API::ZDNN_SQRT, "zdnnx_sqrt", int32Ty, {opaquePtrTy, opaquePtrTy}, false),
     // RNN operations
     ApiSpec(API::ZDNN_LSTM, "zdnn_lstm", int32Ty, {opaquePtrTy, opaquePtrTy, opaquePtrTy, opaquePtrTy, opaquePtrTy, opaquePtrTy, opaquePtrTy, int64Ty, opaquePtrTy, opaquePtrTy, opaquePtrTy}, false),
     ApiSpec(API::ZDNN_GRU, "zdnn_gru", int32Ty, {opaquePtrTy, opaquePtrTy, opaquePtrTy, opaquePtrTy, opaquePtrTy, opaquePtrTy, int64Ty, opaquePtrTy, opaquePtrTy}, false),
     // Other operations
-    ApiSpec(API::ZDNN_MATMUL_OP, "zdnn_matmul_op_ext", int32Ty, {opaquePtrTy, opaquePtrTy, opaquePtrTy, int64Ty, opaquePtrTy}, false),
-    ApiSpec(API::ZDNN_MATMUL_BCAST_OP, "zdnn_matmul_bcast_op_ext", int32Ty, {opaquePtrTy, opaquePtrTy, opaquePtrTy, int64Ty, opaquePtrTy}, false),
+    ApiSpec(API::ZDNN_MATMUL_OP, "zdnnx_matmul_op", int32Ty, {opaquePtrTy, opaquePtrTy, opaquePtrTy, int64Ty, opaquePtrTy}, false),
+    ApiSpec(API::ZDNN_MATMUL_BCAST_OP, "zdnnx_matmul_bcast_op", int32Ty, {opaquePtrTy, opaquePtrTy, opaquePtrTy, int64Ty, opaquePtrTy}, false),
+    ApiSpec(API::ZDNN_MATMUL_TRANSPOSE_OP, "zdnnx_matmul_transpose_op", int32Ty, {opaquePtrTy, opaquePtrTy, opaquePtrTy, int64Ty, int64Ty, int64Ty, opaquePtrTy}, false),
+    ApiSpec(API::ZDNN_QUANTIZED_MATMUL_OP, "zdnn_quantized_matmul_op", int32Ty, {opaquePtrTy, opaquePtrTy, opaquePtrTy, int64Ty, int64Ty, int64Ty, int64Ty, int64Ty, int64Ty, opaquePtrTy, opaquePtrTy}, false),
     ApiSpec(API::ZDNN_CONV2D, "zdnn_conv2d", int32Ty, {opaquePtrTy, opaquePtrTy, opaquePtrTy, int64Ty, int64Ty, int64Ty, int64Ty, opaquePtrTy, opaquePtrTy}, false),
     ApiSpec(API::ZDNN_AVGPOOL2D, "zdnn_avgpool2d", int32Ty, {opaquePtrTy, int64Ty, int64Ty, int64Ty, int64Ty, int64Ty, opaquePtrTy}, false),
     ApiSpec(API::ZDNN_MAXPOOL2D, "zdnn_maxpool2d", int32Ty, {opaquePtrTy, int64Ty, int64Ty, int64Ty, int64Ty, int64Ty, opaquePtrTy}, false),
@@ -109,8 +120,10 @@ Value ZTensorHelper::getPreTransformedDescPtr(zdnn_data_types zDNNDataType,
 
   Type llvmI64Ty = rewriter.getI64Type();
   Type llvmZTensorDescStructTy = getZTensorDescStructTy(context);
-  Value one = create.llvm.constant(llvmI64Ty, (int64_t)1);
+  Value one = create.llvm.constant(llvmI64Ty, static_cast<int64_t>(1));
 
+  // Alloca is fine for LLVM structs; if we were to use alloc, we would also to
+  // manually insert free calls. So alloca makes total sense here.
   Value preTransformedDescPtr = create.llvm._alloca(
       krnl::getPointerType(context, llvmZTensorDescStructTy),
       llvmZTensorDescStructTy, one,
@@ -120,10 +133,12 @@ Value ZTensorHelper::getPreTransformedDescPtr(zdnn_data_types zDNNDataType,
   // descriptor.
   SmallVector<Value, 4> operands;
   // 1. Data layout.
-  Value dataLayout = create.llvm.constant(llvmI64Ty, (int64_t)zDNNDataLayout);
+  Value dataLayout =
+      create.llvm.constant(llvmI64Ty, static_cast<int64_t>(zDNNDataLayout));
   operands.emplace_back(dataLayout);
   // 2. Data type.
-  Value dataType = create.llvm.constant(llvmI64Ty, (int64_t)zDNNDataType);
+  Value dataType =
+      create.llvm.constant(llvmI64Ty, static_cast<int64_t>(zDNNDataType));
   operands.emplace_back(dataType);
   // 3. Tensor descriptor.
   operands.emplace_back(
@@ -150,7 +165,7 @@ Value ZTensorHelper::getTransformedDescPtr(
 
   Type llvmI64Ty = rewriter.getI64Type();
   Type llvmZTensorDescStructTy = getZTensorDescStructTy(context);
-  Value one = create.llvm.constant(llvmI64Ty, (int64_t)1);
+  Value one = create.llvm.constant(llvmI64Ty, static_cast<int64_t>(1));
 
   Value transformedDescPtr = create.llvm._alloca(
       krnl::getPointerType(context, llvmZTensorDescStructTy),
@@ -158,7 +173,8 @@ Value ZTensorHelper::getTransformedDescPtr(
       /*alignment=*/0);
 
   if (isConcat) {
-    Value concatLayout = create.llvm.constant(llvmI64Ty, (int64_t)concatInfo);
+    Value concatLayout =
+        create.llvm.constant(llvmI64Ty, static_cast<int64_t>(concatInfo));
     callApi(rewriter, loc, module, apiRegistry,
         API::ZDNN_GENERATE_TRANSFORMED_DESC_CONCATENATED,
         {toOpaquePtr(rewriter, loc, module, preTransformedDescPtr),
@@ -169,6 +185,31 @@ Value ZTensorHelper::getTransformedDescPtr(
         API::ZDNN_GENERATE_TRANSFORMED_DESC,
         {toOpaquePtr(rewriter, loc, module, preTransformedDescPtr),
             toOpaquePtr(rewriter, loc, module, transformedDescPtr)});
+  return transformedDescPtr;
+}
+
+// Get a transformed descriptor.
+Value ZTensorHelper::getQuantizedTransformedDescPtr(Value preTransformedDescPtr,
+    zdnn_quantized_transform_types transformedType) {
+  MultiDialectBuilder<LLVMBuilder> create(rewriter, loc);
+  MLIRContext *context = module.getContext();
+
+  Type llvmI64Ty = rewriter.getI64Type();
+  Type llvmZTensorDescStructTy = getZTensorDescStructTy(context);
+  Value one = create.llvm.constant(llvmI64Ty, (int64_t)1);
+
+  Value transformedDescPtr = create.llvm._alloca(
+      krnl::getPointerType(context, llvmZTensorDescStructTy),
+      llvmZTensorDescStructTy, one,
+      /*alignment=*/0);
+
+  Value transformedTyVal =
+      create.llvm.constant(llvmI64Ty, (int64_t)transformedType);
+  callApi(rewriter, loc, module, apiRegistry,
+      API::ZDNN_GENERATE_QUANTIZED_TRANSFORMED_DESC,
+      {toOpaquePtr(rewriter, loc, module, preTransformedDescPtr),
+          transformedTyVal,
+          toOpaquePtr(rewriter, loc, module, transformedDescPtr)});
   return transformedDescPtr;
 }
 
@@ -202,7 +243,8 @@ ZTensor ZTensorHelper::getZTensor(Value bufferPtr, zdnn_data_types dataType,
   // LLVM types for zTensor and zTensor descriptor.
   Type llvmZTensorStructTy = getZTensorStructTy(context);
   // Some frequently used constants.
-  Value one = create.llvm.constant(rewriter.getI64Type(), (int64_t)1);
+  Value one =
+      create.llvm.constant(rewriter.getI64Type(), static_cast<int64_t>(1));
 
   // Create a pre transformed descriptor.
   Value preTransformedDescPtr =
@@ -223,7 +265,9 @@ ZTensor ZTensorHelper::getZTensor(Value bufferPtr, zdnn_data_types dataType,
                 /*transformedDescPtr=*/transformedDescPtr,
                 /*isTransformed=*/isTransformed,
                 /*bufferSize=*/bufferSize,
-                /*alignedBuffer=*/bufferPtr);
+                /*alignedBuffer=*/bufferPtr,
+                /*recScale=*/nullptr,
+                /*offset=*/nullptr);
   // clang-format on
 
   zTensor.val = alloc;
@@ -232,6 +276,55 @@ ZTensor ZTensorHelper::getZTensor(Value bufferPtr, zdnn_data_types dataType,
   zTensor.isTransformed = isTransformed;
   zTensor.bufferSize = bufferSize;
   zTensor.bufferPtr = bufferPtr;
+  return zTensor;
+}
+
+/// Create a quantized zTensor.
+ZTensor ZTensorHelper::getQuantizedZTensor(Value bufferPtr,
+    zdnn_data_types dataType, zdnn_data_layouts layout,
+    zdnn_quantized_transform_types transformType, ArrayRef<Value> originalDims,
+    Value recScale, Value offset, bool isTransformed) {
+  MultiDialectBuilder<LLVMBuilder> create(rewriter, loc);
+  MLIRContext *context = module.getContext();
+  ZTensor zTensor;
+
+  // LLVM types for zTensor and zTensor descriptor.
+  Type llvmZTensorStructTy = getZTensorStructTy(context);
+  // Some frequently used constants.
+  Value one = create.llvm.constant(rewriter.getI64Type(), (int64_t)1);
+
+  // Create a pre transformed descriptor.
+  Value preTransformedDescPtr =
+      getPreTransformedDescPtr(dataType, layout, originalDims);
+  // Create a transformed descriptor.
+  Value transformedDescPtr =
+      getQuantizedTransformedDescPtr(preTransformedDescPtr, transformType);
+  // Create the input zTensor.
+  Value alloc =
+      create.llvm._alloca(krnl::getPointerType(context, llvmZTensorStructTy),
+          llvmZTensorStructTy, one,
+          /*alignment=*/0);
+  // Buffer size.
+  Value bufferSize = getBufferSize(transformedDescPtr);
+  // clang-format off
+  fillInZTensor(rewriter, loc, module, alloc,
+                /*preTransformedDescPtr=*/preTransformedDescPtr,
+                /*transformedDescPtr=*/transformedDescPtr,
+                /*isTransformed=*/isTransformed,
+                /*bufferSize=*/bufferSize,
+                /*alignedBuffer=*/bufferPtr,
+                /*recScale=*/recScale,
+                /*offset=*/offset);
+  // clang-format on
+
+  zTensor.val = alloc;
+  zTensor.preTransformedDescPtr = preTransformedDescPtr;
+  zTensor.transformedDescPtr = transformedDescPtr;
+  zTensor.isTransformed = isTransformed;
+  zTensor.bufferSize = bufferSize;
+  zTensor.bufferPtr = bufferPtr;
+  zTensor.recScale = recScale;
+  zTensor.offset = offset;
   return zTensor;
 }
 
@@ -244,7 +337,8 @@ ZTensor ZTensorHelper::getZTensor(Value preTransformedDescPtr,
   ZTensor zTensor;
 
   Type llvmZTensorStructTy = getZTensorStructTy(context);
-  Value one = create.llvm.constant(rewriter.getI64Type(), (int64_t)1);
+  Value one =
+      create.llvm.constant(rewriter.getI64Type(), static_cast<int64_t>(1));
   Value alloc =
       create.llvm._alloca(krnl::getPointerType(context, llvmZTensorStructTy),
           llvmZTensorStructTy, one,
@@ -285,10 +379,10 @@ Value callApi(PatternRewriter &rewriter, Location loc, ModuleOp module,
           apiSpec.outputTy, apiSpec.inputTys, apiSpec.isVarArg);
   SmallVector<Type, 1> outputTys;
   Type outputTy = apiSpec.outputTy;
-  if (!outputTy.isa<LLVM::LLVMVoidType>())
+  if (!mlir::isa<LLVM::LLVMVoidType>(outputTy))
     outputTys.emplace_back(outputTy);
-  return create.llvm.call(
-      ArrayRef<Type>(outputTys), symbolRef, ArrayRef<Value>(params));
+  return create.llvm.call(ArrayRef<Type>(outputTys), symbolRef,
+      ArrayRef<Value>(params), apiSpec.isVarArg);
 }
 
 size_t getRankFromMemRefType(LLVM::LLVMStructType memRefTy) {
@@ -305,7 +399,8 @@ size_t getRankFromMemRefType(LLVM::LLVMStructType memRefTy) {
   if (numElems == 3)
     return 0; // MemRef refers to a scalar.
   else
-    return memRefTy.getBody()[3].cast<LLVM::LLVMArrayType>().getNumElements();
+    return mlir::cast<LLVM::LLVMArrayType>(memRefTy.getBody()[3])
+        .getNumElements();
 }
 
 /// Get a vector of 'size' dimensions from a 1D DenseElementsAttr.
@@ -317,7 +412,7 @@ std::vector<Value> getDimsFromDenseElementsAttr(PatternRewriter &rewriter,
   std::vector<Value> dims;
   auto valueIt = valueAttr.getValues<IntegerAttr>().begin();
   for (unsigned int i = 0; i < size; ++i) {
-    int64_t dim = (*valueIt++).cast<IntegerAttr>().getInt();
+    int64_t dim = mlir::cast<IntegerAttr>(*valueIt++).getInt();
     Value dimVal = create.llvm.constant(rewriter.getI64Type(), dim);
     dims.emplace_back(dimVal);
   }
@@ -363,11 +458,11 @@ std::vector<Value> getDimsFromShapeMemRefBySize(PatternRewriter &rewriter,
           bitcastOp.getArg().getDefiningOp());
       if (addressOfOp) {
         LLVM::GlobalOp globalOp =
-            dyn_cast_or_null<LLVM::GlobalOp>(SymbolTable::lookupSymbolIn(
+            mlir::dyn_cast_or_null<LLVM::GlobalOp>(SymbolTable::lookupSymbolIn(
                 module, addressOfOp.getGlobalNameAttr()));
         if (globalOp) {
           DenseElementsAttr valueAttr =
-              globalOp.getValue().value().dyn_cast<DenseElementsAttr>();
+              mlir::dyn_cast<DenseElementsAttr>(globalOp.getValue().value());
           if (valueAttr)
             return getDimsFromDenseElementsAttr(
                 rewriter, loc, module, valueAttr, size);
@@ -384,7 +479,7 @@ std::vector<Value> getDimsFromShapeMemRefBySize(PatternRewriter &rewriter,
   for (int64_t i = 0; i < size; ++i) {
     Value alignedGep =
         create.llvm.getElemPtr(krnl::getPointerType(context, int64Ty), int64Ty,
-            alignedPtr, ArrayRef<LLVM::GEPArg>{(int32_t)i});
+            alignedPtr, ArrayRef<LLVM::GEPArg>{static_cast<int32_t>(i)});
     Value dimI64 = create.llvm.load(int64Ty, alignedGep);
     dims.emplace_back(dimI64);
   }
@@ -418,7 +513,7 @@ void getDimsFromMemRef(PatternRewriter &rewriter, Location loc, ModuleOp module,
     Value memRef, SmallVectorImpl<Value> &dims) {
   MemRefDescriptor memRefDesc(memRef);
   size_t rank =
-      getRankFromMemRefType(memRef.getType().cast<LLVM::LLVMStructType>());
+      getRankFromMemRefType(mlir::cast<LLVM::LLVMStructType>(memRef.getType()));
   for (size_t i = 0; i < rank; i++) {
     Value dimI64 = memRefDesc.size(rewriter, loc, i);
     dims.emplace_back(dimI64);
@@ -428,10 +523,12 @@ void getDimsFromMemRef(PatternRewriter &rewriter, Location loc, ModuleOp module,
 /// Type conversion from LLVMType to zDNNType.
 /// TODO: fill in the complete list of the zDNN types.
 zdnn_data_types llvmTypeToZDNNType(Type elemType) {
-  if (elemType.isa<Float16Type>())
+  if (mlir::isa<Float16Type>(elemType))
     return FP16;
-  else if (elemType.isa<Float32Type>())
+  else if (mlir::isa<Float32Type>(elemType))
     return FP32;
+  else if (elemType.isInteger(8))
+    return INT8;
   else
     llvm_unreachable("Unexpected LLVM type, cannot be converted to zDNN type.");
 }
@@ -473,7 +570,9 @@ Type getZTensorStructTy(MLIRContext *context) {
   Type llvmI64Ty = IntegerType::get(context, 64);
   Type llvmI1Ty = IntegerType::get(context, 1);
   Type llvmI8Ty = IntegerType::get(context, 8);
-  Type llvmArrayI8Ty = LLVM::LLVMArrayType::get(llvmI8Ty, 31);
+  Type llvmF32Ty = Float32Type::get(context);
+  Type llvmArray3I8Ty = LLVM::LLVMArrayType::get(llvmI8Ty, 3);
+  Type llvmArray20I8Ty = LLVM::LLVMArrayType::get(llvmI8Ty, 20);
   Type llvmI8PtrTy = krnl::getPointerType(context, llvmI8Ty);
   Type llvmZTensorDescStructTy = getZTensorDescStructTy(context);
 
@@ -490,8 +589,14 @@ Type getZTensorStructTy(MLIRContext *context) {
   zTensorTypeElements.emplace_back(llvmI8PtrTy);
   // indicator if data in buffer has been transformed
   zTensorTypeElements.emplace_back(llvmI1Ty);
-  // reserved[31], not currently used, exploiter should not touch
-  zTensorTypeElements.emplace_back(llvmArrayI8Ty);
+  // reserved[3], not currently used, should contain zeros
+  zTensorTypeElements.emplace_back(llvmArray3I8Ty);
+  // the scale factor for quantization, stored as reciprocal
+  zTensorTypeElements.emplace_back(llvmF32Ty);
+  // the offset for quantization
+  zTensorTypeElements.emplace_back(llvmF32Ty);
+  // reserved[20], not currently used, should contain zeros
+  zTensorTypeElements.emplace_back(llvmArray20I8Ty);
 
   Type zTensorStructTy = LLVM::LLVMStructType::getLiteral(context,
       /*elements=*/zTensorTypeElements,
@@ -509,7 +614,8 @@ Value toOpaquePtr(
 
 void fillInZTensor(PatternRewriter &rewriter, Location loc, ModuleOp module,
     Value zTensor, Value preTransformedDescPtr, Value transformedDescPtr,
-    bool isTransformed, Value bufferSize, Value alignedBuffer) {
+    bool isTransformed, Value bufferSize, Value alignedBuffer, Value recScale,
+    Value offset) {
   MLIRContext *context = module.getContext();
   MultiDialectBuilder<LLVMBuilder> create(rewriter, loc);
 
@@ -539,13 +645,73 @@ void fillInZTensor(PatternRewriter &rewriter, Location loc, ModuleOp module,
   create.llvm.store(alignedBuffer, bufferPtr);
 
   // 5. Set is_transformed.
-  Value isTransformedVal =
-      create.llvm.constant(llvmI1Ty, (int64_t)((isTransformed) ? 1 : 0));
+  Value isTransformedVal = create.llvm.constant(
+      llvmI1Ty, static_cast<int64_t>(((isTransformed) ? 1 : 0)));
   Value isTransformedDescPtr = create.llvm.getElemPtr(
       llvmZTensorPtrTy, llvmZTensorTy, zTensor, ArrayRef<LLVM::GEPArg>{0, 4});
   create.llvm.store(isTransformedVal, isTransformedDescPtr);
 
-  // 6. Set reserved (not currently used), not touch
+  // 6. Set reserved1 (3 bytes), not currently used.
+
+  // 7. Set rec_scale.
+  Value recScalePtr = create.llvm.getElemPtr(
+      llvmZTensorPtrTy, llvmZTensorTy, zTensor, ArrayRef<LLVM::GEPArg>{0, 6});
+  if (recScale) {
+    Type scaleTy = recScale.getType();
+    assert(
+        scaleTy.isF32() && "Wrong type for zTensor's rec_scale. Must be float");
+    create.llvm.store(recScale, recScalePtr);
+  } else {
+    Value zero = create.llvm.constant(Float32Type::get(context), (double)0.);
+    create.llvm.store(zero, recScalePtr);
+  }
+
+  // 8. Set offset
+  Value offsetPtr = create.llvm.getElemPtr(
+      llvmZTensorPtrTy, llvmZTensorTy, zTensor, ArrayRef<LLVM::GEPArg>{0, 7});
+  if (offset) {
+    Type offsetTy = offset.getType();
+    assert(
+        offsetTy.isF32() && "Wrong type for zTensor's offset. Must be float");
+    create.llvm.store(offset, offsetPtr);
+  } else {
+    Value zero = create.llvm.constant(Float32Type::get(context), (double)0.);
+    create.llvm.store(zero, offsetPtr);
+  }
+
+  // 9. Set reserved2 (20 bytes), not currently used.
+}
+
+Value loadFromMemRef(
+    LLVMBuilder &create, Type elementTy, Value llvmMemRef, int32_t index) {
+  MLIRContext *context = create.getBuilder().getContext();
+  MemRefDescriptor mrd(llvmMemRef);
+  Value alignedPtr = mrd.alignedPtr(create.getBuilder(), create.getLoc());
+  Value alignedGep = create.getElemPtr(krnl::getPointerType(context, elementTy),
+      elementTy, alignedPtr, ArrayRef<LLVM::GEPArg>{index});
+  return create.load(elementTy, alignedGep);
+}
+
+void storeToMemRef(
+    LLVMBuilder &create, Value val, Value llvmMemRef, int32_t index) {
+  MLIRContext *context = create.getBuilder().getContext();
+  Type elementTy = val.getType();
+  MemRefDescriptor mrd(llvmMemRef);
+  Value alignedPtr = mrd.alignedPtr(create.getBuilder(), create.getLoc());
+  Value alignedGep = create.getElemPtr(krnl::getPointerType(context, elementTy),
+      elementTy, alignedPtr, ArrayRef<LLVM::GEPArg>{index});
+  create.store(val, alignedGep);
+}
+
+zdnn_quantized_transform_types getQuantizedTransformType(mlir::StringRef str) {
+  if (str.equals_insensitive(QTYPE_DLFLOAT16))
+    return QUANTIZED_DLFLOAT16;
+  else if (str.equals_insensitive(QTYPE_INT8))
+    return QUANTIZED_INT8;
+  else if (str.equals_insensitive(QTYPE_WEIGHTS))
+    return QUANTIZED_WEIGHTS_INT8;
+  else
+    llvm_unreachable("Invalid transform type");
 }
 
 } // namespace zlow

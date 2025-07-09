@@ -28,7 +28,7 @@ LogicalResult ONNXShapeTransformOpShapeHelper::computeShape() {
   Value input = operandAdaptor.getInput();
   AffineMap indexMap = operandAdaptor.getIndexMap();
 
-  auto inputType = input.getType().cast<ShapedType>();
+  auto inputType = mlir::cast<ShapedType>(input.getType());
   Type elementType = inputType.getElementType();
   ArrayRef<int64_t> inputDims = inputType.getShape();
   int64_t outputRank = indexMap.getNumResults();
@@ -67,13 +67,13 @@ LogicalResult ONNXShapeTransformOpShapeHelper::computeShape() {
 //===----------------------------------------------------------------------===//
 
 LogicalResult ONNXShapeTransformOp::inferShapes(
-    std::function<void(mlir::Region &)> doShapeInference) {
+    std::function<void(Region &)> doShapeInference) {
   Operation *op = getOperation();
   // If any input is not ranked tensor, do nothing.
   if (!hasShapeAndRank(op))
     return success();
   // Input and output have the same element type and encoding.
-  auto inputType = getOperand().getType().cast<RankedTensorType>();
+  auto inputType = mlir::cast<RankedTensorType>(getOperand().getType());
   ONNXShapeTransformOpShapeHelper shapeHelper(op, {});
   return shapeHelper.computeShapeAndUpdateTypes(
       inputType.getElementType(), inputType.getEncoding());
@@ -93,13 +93,13 @@ LogicalResult ONNXShapeTransformOp::verify() {
     return emitError("Does not support affine_map with symbols");
 
   // Only support static shape at this moment.
-  auto inputType = dyn_cast<ShapedType>(input.getType());
+  auto inputType = mlir::dyn_cast<ShapedType>(input.getType());
   if (inputType && !inputType.hasStaticShape())
     return emitError("Does not support input with dynamic shape");
 
   // If input and output have static shape, check that the same number of
   // elements are the same.
-  if (auto outputType = dyn_cast<ShapedType>(output.getType()))
+  if (auto outputType = mlir::dyn_cast<ShapedType>(output.getType()))
     if (outputType.hasStaticShape()) {
       uint64_t elementsInput = 1;
       for (uint64_t d : inputType.getShape())

@@ -44,8 +44,8 @@ LogicalResult ONNXGatherElementsOp::verify() {
   // Get operands and attributes.
   Value data = operandAdaptor.getData();
   Value indices = operandAdaptor.getIndices();
-  auto dataType = data.getType().cast<ShapedType>();
-  auto indicesType = indices.getType().cast<ShapedType>();
+  auto dataType = mlir::cast<ShapedType>(data.getType());
+  auto indicesType = mlir::cast<ShapedType>(indices.getType());
   int64_t dataRank = dataType.getRank();
   int64_t indicesRank = indicesType.getRank();
   int64_t axis = this->getAxis();
@@ -71,8 +71,13 @@ LogicalResult ONNXGatherElementsOp::verify() {
   // along axis of size s.
   ArrayRef<int64_t> dataShape = dataType.getShape();
   const int64_t dataDimAtAxis = dataShape[axis];
-  if (dataDimAtAxis >= 0)
-    if (ElementsAttr valueAttribute = getElementAttributeFromONNXValue(indices))
+  if (dataDimAtAxis >= 0) {
+    if (ElementsAttr valueAttribute =
+            getElementAttributeFromONNXValue(indices)) {
+      if (isElementAttrUninitializedDenseResource(valueAttribute)) {
+        return success(); // Return success to allow the parsing of MLIR with
+                          // elided attributes
+      }
       for (IntegerAttr value : valueAttribute.getValues<IntegerAttr>()) {
         int64_t index = value.getInt();
         if (index >= -dataDimAtAxis && index < dataDimAtAxis)
@@ -83,6 +88,8 @@ LogicalResult ONNXGatherElementsOp::verify() {
             onnx_mlir::Diagnostic::Range<int64_t>(
                 -dataDimAtAxis, dataDimAtAxis - 1));
       }
+    }
+  }
 
   return success();
 }
@@ -97,7 +104,8 @@ LogicalResult ONNXGatherElementsOp::inferShapes(
   if (!hasShapeAndRank(getOperation()))
     return success();
 
-  Type elementType = getData().getType().cast<ShapedType>().getElementType();
+  Type elementType =
+      mlir::cast<ShapedType>(getData().getType()).getElementType();
   ONNXGatherElementsOpShapeHelper shapeHelper(getOperation(), {});
   return shapeHelper.computeShapeAndUpdateType(elementType);
 }

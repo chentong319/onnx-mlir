@@ -4,7 +4,7 @@
 
 //===-------------- onnx-mlir-opt.cpp - Optimization Driver ---------------===//
 //
-// Copyright 2019-2022 The IBM Research Authors.
+// Copyright 2019-2024 The IBM Research Authors.
 //
 // =============================================================================
 //
@@ -24,6 +24,7 @@
 #include <mlir/IR/AsmState.h>
 #include <mlir/IR/Dialect.h>
 #include <mlir/IR/MLIRContext.h>
+#include <mlir/IR/Threading.h>
 #include <mlir/InitAllPasses.h>
 #include <mlir/Interfaces/ViewLikeInterface.h>
 #include <mlir/Pass/Pass.h>
@@ -57,14 +58,14 @@ void scanAndSetOptLevel(int argc, char **argv) {
       num = atoi(&argv[i][2]); // Get the number starting 2 char down.
     // Silently ignore out of bound opt levels.
     if (num >= 0 && num <= 3) {
-      OptimizationLevel = (OptLevel)num;
+      OptimizationLevel = static_cast<OptLevel>(num);
       return;
     }
   }
 }
 
 void scanAndSetMCPU(int argc, char **argv) {
-  // Scan --mcpu and add them to the mcpu option.
+  // Scan for (deprecated) --mcpu and add them to the mcpu option.
   for (int i = argc - 1; i > 0; --i) {
     std::string currStr(argv[i]);
     if (currStr.find("--mcpu=") == 0) {
@@ -75,6 +76,25 @@ void scanAndSetMCPU(int argc, char **argv) {
     if (currStr.find("-mcpu=") == 0) {
       std::string cpuKind(&argv[i][6]); // Get the string starting 6 chars down.
       setTargetCPU(cpuKind);
+      break;
+    }
+  }
+}
+
+void scanAndSetMArch(int argc, char **argv) {
+  // Scan --march and add them to the march option.
+  for (int i = argc - 1; i > 0; --i) {
+    std::string currStr(argv[i]);
+    if (currStr.find("--march=") == 0) {
+      std::string archKind(
+          &argv[i][8]); // Get the string starting 8 chars down.
+      setTargetArch(archKind);
+      break;
+    }
+    if (currStr.find("-march=") == 0) {
+      std::string archKind(
+          &argv[i][7]); // Get the string starting 7 chars down.
+      setTargetArch(archKind);
       break;
     }
   }
@@ -106,9 +126,10 @@ int main(int argc, char **argv) {
   // before command line options are parsed.
   scanAndSetOptLevel(argc, argv);
 
-  // Scan CPU manually now as it is needed to register passes
+  // Scan CPU and Arch manually now as it is needed to register passes
   // before command line options are parsed.
   scanAndSetMCPU(argc, argv);
+  scanAndSetMArch(argc, argv);
 
   // Scan maccel manually now as it is needed to initialize accelerators
   // before ParseCommandLineOptions() is called.
@@ -161,9 +182,21 @@ int main(int argc, char **argv) {
   // Passes are configured with command line options so they must be configured
   // after command line parsing but before any passes are run.
   configurePasses();
+  for (auto *accel : accel::Accelerator::getAccelerators())
+    accel->configurePasses();
 
+  std::unique_ptr<llvm::ThreadPoolInterface> threadPoolPtr = nullptr;
   auto passManagerSetupFn = [&](PassManager &pm) {
     MLIRContext *ctx = pm.getContext();
+    // Set number of threads in the MLIRContext
+    if (compilationNumThreads > 0)
+      ctx->disableMultithreading();
+    if (compilationNumThreads > 1) {
+      threadPoolPtr = std::make_unique<llvm::DefaultThreadPool>(
+          llvm::hardware_concurrency(compilationNumThreads));
+      ctx->setThreadPool(*threadPoolPtr);
+    }
+
     // MlirOptMain constructed ctx with our registry so we just load all our
     // already registered dialects.
     ctx->loadAllAvailableDialects();
@@ -178,7 +211,10 @@ int main(int argc, char **argv) {
   MlirOptMainConfig config;
   config.setPassPipelineSetupFn(passManagerSetupFn)
       .splitInputFile(split_input_file ? kDefaultSplitMarker : "")
-      .verifyDiagnostics(verify_diagnostics)
+      .verifyDiagnostics(
+          verify_diagnostics
+              ? mlir::SourceMgrDiagnosticVerifierHandler::Level::All
+              : mlir::SourceMgrDiagnosticVerifierHandler::Level::None)
       .verifyPasses(verify_passes)
       .allowUnregisteredDialects(allowUnregisteredDialects)
       .emitBytecode(false)

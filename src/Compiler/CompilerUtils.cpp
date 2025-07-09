@@ -14,7 +14,9 @@
 
 #include "CompilerUtils.hpp"
 
+#include <ctime>
 #include <fstream>
+#include <iostream>
 #include <memory>
 #include <regex>
 
@@ -57,6 +59,11 @@ mlir::DefaultTimingManager timingManager;
 mlir::TimingScope rootTimingScope;
 namespace onnx_mlir {
 
+// Values to report the current phase of compilation.
+uint64_t CURRENT_COMPILE_PHASE = 1;
+uint64_t TOTAL_COMPILE_PHASE = 0;
+static DiagnosticEngine::HandlerID diagnosticHandlerID = 0;
+
 // Make a function that forces preserving all files using the runtime arguments
 // and/or the overridePreserveFiles enum.
 enum class KeepFilesOfType { All, MLIR, LLVMIR, Bitcode, Object, None };
@@ -64,6 +71,26 @@ enum class KeepFilesOfType { All, MLIR, LLVMIR, Bitcode, Object, None };
 // Value below override at compile time by effectively setting the requested
 // flags.
 static constexpr KeepFilesOfType overridePreserveFiles = KeepFilesOfType::None;
+
+// Get optimization level from onnx-mlir only when it is not specified
+std::string getOptimizationLevelUniqueOption(
+    std::vector<std::vector<std::string>> specialOptionsList) {
+  if (std::any_of(specialOptionsList.begin(), specialOptionsList.end(),
+          [](std::vector<std::string> specialOptions) {
+            if (std::any_of(specialOptions.begin(), specialOptions.end(),
+                    [](std::string str) {
+                      std::regex optimization("^-O[0-9]");
+                      std::smatch m;
+                      return std::regex_match(str, m, optimization);
+                    })) // End of one options
+              return true;
+            else
+              return false;
+          }))
+    return std::string();
+  else
+    return getOptimizationLevelOption();
+}
 
 static bool keepFiles(KeepFilesOfType preserve) {
   // When wanting to preserve all files, do it regardless of isBitcode.
@@ -162,6 +189,43 @@ int Command::exec(std::string wdir) const {
   return 0;
 }
 
+void showCompilePhase(std::string msg) {
+  time_t rawTime = 0;
+  struct tm *timeInfo;
+  char buffer[80];
+  // Remember first time.
+  static time_t firstRawTime;
+  static bool hasFirstRawTime = false;
+
+  // Get current date.
+  std::string currentTime("");
+  if (time(&rawTime) == -1 || (timeInfo = localtime(&rawTime)) == NULL ||
+      (strftime(buffer, 80, "%c", timeInfo)) == 0) {
+    currentTime = "Error obtaining current time";
+  } else {
+    currentTime = buffer;
+  }
+
+  // Compute time difference in seconds.
+  int diff = 0;
+  if (hasFirstRawTime) {
+    diff = difftime(rawTime, firstRawTime);
+  } else {
+    firstRawTime = rawTime;
+    hasFirstRawTime = true;
+  }
+  llvm::outs() << "[" << CURRENT_COMPILE_PHASE++ << "/" << TOTAL_COMPILE_PHASE
+               << "] " << currentTime << " (" << diff << "s) " << msg << "\n";
+  // Flush so that if there are errors, we know where it came from.
+  llvm::outs().flush();
+
+  // Reset current phase.
+  if (CURRENT_COMPILE_PHASE > TOTAL_COMPILE_PHASE) {
+    CURRENT_COMPILE_PHASE = 1;
+    hasFirstRawTime = false;
+  }
+}
+
 } // namespace onnx_mlir
 
 namespace onnx_mlir {
@@ -201,7 +265,7 @@ static void loadMLIR(std::string inputFilename, mlir::MLIRContext &context,
   if ((numOfFuncOp == 1) && (!shapeInformation.empty())) {
     ModelInputShaper modelInputShaper_;
     modelInputShaper_.setShapeInformation(shapeInformation);
-    auto funcType = dyn_cast<FunctionType>(funcOp.getFunctionType());
+    auto funcType = mlir::dyn_cast<FunctionType>(funcOp.getFunctionType());
     ArrayRef<Type> argTypes = funcType.getInputs();
     SmallVector<Type, 4> newArgTypes;
     for (uint64_t i = 0; i < argTypes.size(); ++i) {
@@ -279,13 +343,15 @@ static void tailorLLVMIR(llvm::Module &llvmModule) {
           llvmModule.getNamedGlobal(StringRef("_entry_point_arrays" + tag))) {
     if (GV->isConstant() && GV->hasDefinitiveInitializer()) {
       llvm::Constant *initializer = GV->getInitializer();
-      llvm::ArrayType *AT = dyn_cast<llvm::ArrayType>(initializer->getType());
+      llvm::ArrayType *AT =
+          mlir::dyn_cast<llvm::ArrayType>(initializer->getType());
       for (uint64_t i = 0; i < AT->getNumElements() - 1; ++i) {
         llvm::GlobalVariable *entryGV = llvmModule.getNamedGlobal(
             StringRef("_entry_point_" + std::to_string(i) + tag));
         if (entryGV->isConstant()) {
           llvm::ConstantDataSequential *entry =
-              dyn_cast<llvm::ConstantDataSequential>(entryGV->getInitializer());
+              mlir::dyn_cast<llvm::ConstantDataSequential>(
+                  entryGV->getInitializer());
           exportedFuncs.emplace_back(entry->getAsCString());
         }
       }
@@ -333,8 +399,10 @@ std::string getTargetFilename(
 // Returns 0 on success, error code on failure.
 static int genLLVMBitcode(const mlir::OwningOpRef<ModuleOp> &module,
     std::string outputNameNoExt, std::string optimizedBitcodeNameWithExt) {
-  auto llvmTiming = rootTimingScope.nest(
-      "[onnx-mlir] Compiling MLIR module to LLVM Optimized Bitcode");
+  std::string msg =
+      "Translating MLIR Module to LLVM and Generating LLVM Optimized Bitcode";
+  showCompilePhase(msg);
+  auto llvmTiming = rootTimingScope.nest("[onnx-mlir] " + msg);
   std::error_code error;
 
   // Write bitcode to a file.
@@ -353,6 +421,12 @@ static int genLLVMBitcode(const mlir::OwningOpRef<ModuleOp> &module,
     return InvalidTemporaryFileAccess;
   }
 
+  // In the LLVM translation, we get some warnings, so disable in non-verbose
+  // mode.
+  if (diagnosticHandlerID && !VerboseOutput) {
+    module.get().getContext()->getDiagEngine().eraseHandler(
+        diagnosticHandlerID);
+  }
   llvm::LLVMContext llvmContext;
   mlir::registerBuiltinDialectTranslation(*(module.get().getContext()));
   mlir::registerLLVMDialectTranslation(*(module.get().getContext()));
@@ -389,12 +463,14 @@ static int genLLVMBitcode(const mlir::OwningOpRef<ModuleOp> &module,
   std::string optPath = getToolPath("opt");
   Command optBitcode(/*exePath=*/optPath);
   setXoptOption({"--code-model", modelSizeStr[modelSize]});
-  int rc = optBitcode.appendStr(getOptimizationLevelOption())
+  int rc = optBitcode
+               .appendStr(getOptimizationLevelUniqueOption(
+                   {getLLVMOptions(), getXoptOption()}))
                .appendStr(getTargetTripleOption())
-               .appendStr(getTargetArchOption())
-               .appendStr(getTargetCPUOption())
+               .appendStr(getTargetArchOption(/*forLLVM toolchain*/ true))
+               .appendStr(getTargetCPUOption(/*forLLVM*/ true))
                .appendList(getXoptOption())
-               .appendStr(getLLVMOption())
+               .appendList(getLLVMOptions())
                .appendList({"-o", optimizedBitcodeNameWithExt})
                .appendStr(unoptimizedBitcodeNameWithExt)
                .exec();
@@ -405,17 +481,20 @@ static int genLLVMBitcode(const mlir::OwningOpRef<ModuleOp> &module,
 // Return 0 on success, error code on failure.
 static int genModelObject(
     std::string bitcodeNameWithExt, std::string &modelObjNameWithExt) {
-  auto objectTiming =
-      rootTimingScope.nest("[onnx-mlir] Compiling LLVM Bitcode to Object File");
+  std::string msg = "Generating Object from LLVM Bitcode";
+  showCompilePhase(msg);
+  auto objectTiming = rootTimingScope.nest("[onnx-mlir] " + msg);
   std::string llcPath = getToolPath("llc");
   Command llvmToObj(/*exePath=*/llcPath);
   setXllcOption({"--code-model", modelSizeStr[modelSize]});
-  int rc = llvmToObj.appendStr(getOptimizationLevelOption())
+  int rc = llvmToObj
+               .appendStr(getOptimizationLevelUniqueOption(
+                   {getLLVMOptions(), getXllcOption()}))
                .appendStr(getTargetTripleOption())
-               .appendStr(getTargetArchOption())
-               .appendStr(getTargetCPUOption())
+               .appendStr(getTargetArchOption(/*LLVM toolchain*/ true))
+               .appendStr(getTargetCPUOption(/*LLVM*/ true))
                .appendList(getXllcOption())
-               .appendStr(getLLVMOption())
+               .appendList(getLLVMOptions())
                .appendStr("-filetype=obj")
                .appendStr("-relocation-model=pic")
                .appendList({"-o", modelObjNameWithExt})
@@ -427,8 +506,9 @@ static int genModelObject(
 // Return 0 on success, error code on failure.
 static int genJniObject(const mlir::OwningOpRef<ModuleOp> &module,
     std::string jniSharedLibPath, std::string jniObjPath) {
-  auto jniTiming =
-      rootTimingScope.nest("[onnx-mlir] Compiling JNI Object File");
+  std::string msg = "Generating JNI Object";
+  showCompilePhase(msg);
+  auto jniTiming = rootTimingScope.nest("[onnx-mlir] " + msg);
   Command ar(/*exePath=*/getToolPath("ar", true));
   int rc = ar.appendStr("x")
                // old version of ar does not support --output so comment out
@@ -447,8 +527,9 @@ static int genJniObject(const mlir::OwningOpRef<ModuleOp> &module,
 static int genSharedLib(std::string sharedLibNameWithExt,
     std::vector<std::string> opts, std::vector<std::string> objs,
     std::vector<std::string> libs, std::vector<std::string> libDirs) {
-  auto sharedLibTiming =
-      rootTimingScope.nest("[onnx-mlir] Linking Shared Library");
+  std::string msg = "Linking and Generating the Output Shared Library";
+  showCompilePhase(msg);
+  auto sharedLibTiming = rootTimingScope.nest("[onnx-mlir] " + msg);
 #ifdef _WIN32
   std::vector<std::string> outputOpt = {"/Fe:" + sharedLibNameWithExt};
   // link has to be before libpath since they need to be passed through to the
@@ -498,13 +579,18 @@ static int genSharedLib(std::string sharedLibNameWithExt,
 // Return 0 on success, error code on failure.
 static int genJniJar(const mlir::OwningOpRef<ModuleOp> &module,
     std::string modelSharedLibPath, std::string modelJniJarPath) {
-  auto jniJarTiming = rootTimingScope.nest("[onnx-mlir] Creating JNI Jar");
+  std::string msg = "Creating JNI Jar";
+  showCompilePhase(msg);
+  auto jniJarTiming = rootTimingScope.nest("[onnx-mlir] " + msg);
   llvm::SmallString<8> libraryPath(getLibraryPath());
   llvm::sys::path::append(libraryPath, "javaruntime.jar");
   std::string javaRuntimeJarPath = llvm::StringRef(libraryPath).str();
 
   // Copy javaruntime.jar to model jar.
   llvm::sys::fs::copy_file(javaRuntimeJarPath, modelJniJarPath);
+  if (VerboseOutput)
+    llvm::outs() << "cp " << javaRuntimeJarPath << " " << modelJniJarPath
+                 << "\n";
 
   // Add shared library to model jar.
   Command jar(getToolPath("jar", true));
@@ -721,8 +807,8 @@ static int emitOutputFiles(std::string outputNameNoExt,
         return rc;
     }
     if (VerboseOutput)
-      printf(
-          "Object file '%s' has been compiled.\n", modelObjNameWithExt.c_str());
+      llvm::outs() << "Object file '" << modelObjNameWithExt
+                   << "' has been compiled.\n";
   } break;
   case EmitLib: {
     std::string sharedLibNameWithExt;
@@ -736,8 +822,8 @@ static int emitOutputFiles(std::string outputNameNoExt,
         return rc;
     }
     if (VerboseOutput)
-      printf("Shared library '%s' has been compiled.\n",
-          sharedLibNameWithExt.c_str());
+      llvm::outs() << "Shared library '" << sharedLibNameWithExt
+                   << "' has been compiled.\n";
   } break;
   case EmitJNI: {
     int rc = compileModuleToJniJar(module, outputNameNoExt);
@@ -749,35 +835,40 @@ static int emitOutputFiles(std::string outputNameNoExt,
         return rc;
     }
     if (VerboseOutput)
-      printf(
-          "JNI archive '%s.jar' has been compiled.\n", outputNameNoExt.c_str());
+      llvm::outs() << "JNI archive '" << outputNameNoExt
+                   << ".jar' has been compiled.\n";
   } break;
   default: {
     // Emit the version with all constants included.
-    std::string ouputNameWithExt =
+    std::string outputNameWithExt =
         getTargetFilename(outputNameNoExt, emissionTarget);
-    int rc = outputCode(module, ouputNameWithExt);
-    if (VerboseOutput)
-      printf("Full MLIR code written to: \n\t%s\n\n", ouputNameWithExt.c_str());
-    if (rc != CompilerSuccess)
-      return rc;
-
+    if (!doNotEmitFullMLIRCode) {
+      int rc = outputCode(module, outputNameWithExt);
+      if (VerboseOutput)
+        llvm::outs() << "Full MLIR code written to:\n"
+                     << "\t" << outputNameWithExt << "\n\n";
+      if (rc != CompilerSuccess)
+        return rc;
+    }
     // Elide element attributes if larger than 100.
     if (emissionTarget == EmitONNXBasic || emissionTarget == EmitONNXIR ||
         emissionTarget == EmitMLIR) {
       std::string tempNameWithExt = outputNameNoExt + ".tmp";
       int rc = outputCode(module, tempNameWithExt, /*largeElementLimit=*/100);
       if (VerboseOutput) {
-        printf("Constant-free MLIR Code written to: \n\t%s\n\n",
-            tempNameWithExt.c_str());
-        printf("Use:\n\t%s\nto continue lowering the code to other dialects.\n",
-            ouputNameWithExt.c_str());
+        llvm::outs() << "Constant-free MLIR Code written to:\n"
+                     << "\t" << tempNameWithExt << "\n\n";
+        llvm::outs() << "Use:\n"
+                     << "\t" << outputNameWithExt
+                     << "\nto continue lowering the code to other dialects.\n";
       }
       if (rc != CompilerSuccess)
         return rc;
     }
   }
   }
+  showCompilePhase("Compilation completed");
+
   return CompilerSuccess;
 } // end anonymous namespace
 
@@ -795,14 +886,16 @@ static const llvm::Target *getLLVMTarget(
   return LLVMTarget;
 }
 
-/// Return the module datalayout string. The datalayout string is determined
+/// Return the module data layout string. The data layout string is determined
 /// by creating a target machine using the target triple and target cpu.
 static std::string getDataLayout(const Location &loc) {
   const llvm::Target &LLVMTarget = *getLLVMTarget(mtriple, loc);
   llvm::TargetOptions ops;
+  std::string mcpuForLLVMToolchain = getTargetCPUOption(
+      /*forLLVM*/ true, /*cpu only*/ true);
   auto targetMachine =
       std::unique_ptr<llvm::TargetMachine>{LLVMTarget.createTargetMachine(
-          mtriple, mcpu, "" /*features*/, ops, std::nullopt)};
+          mtriple, mcpuForLLVMToolchain, "" /*features*/, ops, std::nullopt)};
   if (!targetMachine) {
     emitError(loc, "failed to create target machine");
     return nullptr;
@@ -810,7 +903,7 @@ static std::string getDataLayout(const Location &loc) {
 
   const llvm::DataLayout &dl = targetMachine->createDataLayout();
   std::string dataLayoutString = dl.getStringRepresentation();
-  assert(dataLayoutString != "" && "Expecting a valid target datalayout");
+  assert(dataLayoutString != "" && "Expecting a valid target data layout");
 
   return dataLayoutString;
 }
@@ -893,14 +986,34 @@ static int emitOutput(mlir::OwningOpRef<ModuleOp> &module,
 int compileModule(mlir::OwningOpRef<ModuleOp> &module,
     mlir::MLIRContext &context, std::string outputNameNoExt,
     EmissionTargetType emissionTarget) {
-  auto compileModuleTiming =
-      rootTimingScope.nest("[onnx-mlir] Compiling Module using MLIR");
+  // When a C++ program calls this function directly without using onnx-mlir
+  // driver, there is no importing phase (e.g. the model is .mlir, not .onnx).
+  // Thus, decrease the total number of phases.
+  if (CURRENT_COMPILE_PHASE == 1) {
+    SET_TOTAL_COMPILE_PHASE(emissionTarget);
+    TOTAL_COMPILE_PHASE--;
+  }
+
+  std::string msg = "Compiling and Optimizing MLIR Module";
+  showCompilePhase(msg);
+  auto compileModuleTiming = rootTimingScope.nest("[onnx-mlir] " + msg);
 
   int rc = setupModule(module, context, outputNameNoExt);
   if (rc != CompilerSuccess)
     return rc;
 
   configurePasses();
+
+  // Enable printing for error handler on llvm error stream. Save ID if we want
+  // to disable it later. We currently disable for the llvm lowering, as
+  // otherwise we currently get an unrecognized warning for the "onnx.name"
+  // attribute in function operations. In Verbose mode, we keep the error
+  // handling all the way to the end.
+  diagnosticHandlerID =
+      context.getDiagEngine().registerHandler([](Diagnostic &diag) {
+        llvm::errs() << diag << "\n";
+        return mlir::LogicalResult::success();
+      });
 
   mlir::PassManager pm(
       module.get()->getName(), mlir::OpPassManager::Nesting::Implicit);
@@ -911,6 +1024,7 @@ int compileModule(mlir::OwningOpRef<ModuleOp> &module,
   bool hasAccel = false;
   for (auto *accel : onnx_mlir::accel::Accelerator::getAccelerators()) {
     hasAccel = true;
+    accel->configurePasses();
     accel->addPasses(module, pm, emissionTarget, outputNameNoExt);
   }
   if (!hasAccel)
@@ -920,7 +1034,7 @@ int compileModule(mlir::OwningOpRef<ModuleOp> &module,
     pm.addInstrumentation(std::make_unique<HeapReporter>(
         heapLogFileame, reportHeapBefore, reportHeapAfter));
   }
-  (void)mlir::applyPassManagerCLOptions(pm);
+  static_cast<void>(mlir::applyPassManagerCLOptions(pm));
 
   if (enableTiming) {
     pm.enableTiming(compileModuleTiming);

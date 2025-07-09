@@ -4,7 +4,7 @@
 
 //===-------------------------- NNPAAccelerator.cpp -----------------------===//
 //
-// Copyright 2022 The IBM Research Authors.
+// Copyright 2022-2024 The IBM Research Authors.
 //
 // =============================================================================
 //
@@ -25,7 +25,7 @@
 #include "src/Accelerators/NNPA/Dialect/ZLow/ZLowOps.hpp"
 #include "src/Accelerators/NNPA/NNPAAccelerator.hpp"
 #include "src/Accelerators/NNPA/Pass/NNPAPasses.hpp"
-#include "src/Accelerators/NNPA/Support/NNPALimit.h"
+#include "src/Accelerators/NNPA/Support/NNPALimit.hpp"
 #include "src/Compiler/CompilerOptions.hpp"
 #include "zdnn.h"
 
@@ -52,18 +52,42 @@ NNPAAccelerator::NNPAAccelerator() : Accelerator(Accelerator::Kind::NNPA) {
   LLVM_DEBUG(llvm::dbgs() << "Creating an NNPA accelerator\n");
 
   // Print a warning if mcpu is not set or < z16.
-  if (!isCompatibleWithNNPALevel(NNPA_Z16))
-    llvm::outs() << "Warning: No NNPA code is generated because --mcpu is not "
-                    "set or < z16.\n";
+  if (!isCompatibleWithNNPALevel(NNPALevel::M14))
+    llvm::outs() << "\nWarning: No NNPA code is generated because:\n"
+                    "  --march is not set/older than z16.\n\n";
 
   acceleratorTargets.push_back(this);
   // Order is important! libRuntimeNNPA depends on libzdnn
-  addCompilerConfig(CCM_SHARED_LIB_DEPS, {"RuntimeNNPA", "zdnn"}, true);
+  std::vector<std::string> libs;
+  libs.push_back("RuntimeNNPA");
+  libs.push_back("zdnn");
+  // Add OMP library if needed.
+#ifdef ZDNNX_WITH_OMP
+  // Use LLVM's OpenMP if LLVM is built with OpenMP enabled.
+  std::string ompLib = "ompruntime";
+#ifndef ZDNNX_WITH_OMP_LLVM
+  // Use GCC's OpenMP if LLVM is not built with OpenMP enabled.
+  ompLib = "gomp";
+#endif
+  // ompruntime migh be added in advance if --parallel is used.
+  // Check if ompruntime exists or not.
+  std::vector<std::string> existingLibs =
+      getCompilerConfig(CCM_SHARED_LIB_DEPS);
+  if (!llvm::any_of(
+          existingLibs, [&ompLib](std::string s) { return s == ompLib; }))
+    libs.push_back(ompLib);
+#endif
+  addCompilerConfig(CCM_SHARED_LIB_DEPS, libs, true);
 };
 
 NNPAAccelerator::~NNPAAccelerator() { delete instance; }
 
-uint64_t NNPAAccelerator::getVersionNumber() const { return ZDNN_VERNUM; }
+// Return accelerator version number based on compile NNPA version
+uint64_t NNPAAccelerator::getVersionNumber() const {
+  if (isCompatibleWithNNPALevel(NNPALevel::M15))
+    return NNPA_ZDNN_VERSIONS[NNPALevel::M15];
+  return NNPA_ZDNN_VERSIONS[NNPALevel::M14];
+}
 
 void NNPAAccelerator::addPasses(mlir::OwningOpRef<mlir::ModuleOp> &module,
     mlir::PassManager &pm, onnx_mlir::EmissionTargetType &emissionTarget,
@@ -121,10 +145,6 @@ void NNPAAccelerator::registerPasses(int optLevel) const {
   });
 
   mlir::registerPass([]() -> std::unique_ptr<mlir::Pass> {
-    return onnx_mlir::zhigh::createZHighClipToDLFloatPass();
-  });
-
-  mlir::registerPass([]() -> std::unique_ptr<mlir::Pass> {
     return onnx_mlir::zhigh::createZHighDecomposeStickUnstickPass();
   });
 
@@ -133,12 +153,16 @@ void NNPAAccelerator::registerPasses(int optLevel) const {
   });
 }
 
+void NNPAAccelerator::configurePasses() const {
+  LLVM_DEBUG(llvm::dbgs() << "Configuring passes for NNPA accelerator\n");
+  configurePassesNNPA();
+}
+
 mlir::MemRefType NNPAAccelerator::convertTensorTypeToMemRefType(
     const mlir::TensorType tensorType) const {
   assert(tensorType.hasRank() && "expected only ranked shapes");
-  if (tensorType.cast<mlir::RankedTensorType>()
-          .getEncoding()
-          .dyn_cast_or_null<onnx_mlir::zhigh::ZTensorEncodingAttr>()) {
+  if (mlir::dyn_cast_or_null<onnx_mlir::zhigh::ZTensorEncodingAttr>(
+          mlir::cast<mlir::RankedTensorType>(tensorType).getEncoding())) {
     onnx_mlir::zhigh::ZMemRefType zMemRefType =
         onnx_mlir::zhigh::convertZTensorToMemRefType(tensorType);
     return zMemRefType.value;
@@ -149,9 +173,8 @@ mlir::MemRefType NNPAAccelerator::convertTensorTypeToMemRefType(
 int64_t NNPAAccelerator::getDefaultAllocAlignment(
     const mlir::TensorType tensorType) const {
   assert(tensorType.hasRank() && "expected only ranked shapes");
-  if (tensorType.cast<mlir::RankedTensorType>()
-          .getEncoding()
-          .dyn_cast_or_null<onnx_mlir::zhigh::ZTensorEncodingAttr>())
+  if (mlir::dyn_cast_or_null<onnx_mlir::zhigh::ZTensorEncodingAttr>(
+          mlir::cast<mlir::RankedTensorType>(tensorType).getEncoding()))
     return gAlignment;
   return -1;
 }
@@ -164,8 +187,10 @@ void NNPAAccelerator::conversionTargetONNXToKrnl(
 void NNPAAccelerator::rewritePatternONNXToKrnl(
     mlir::RewritePatternSet &patterns, mlir::TypeConverter &typeConverter,
     mlir::MLIRContext *ctx) const {
-  onnx_mlir::zhigh::populateZHighToZLowConversionPattern(
-      patterns, typeConverter, ctx, enableParallel);
+  onnx_mlir::zhigh::populateZHighToZLowConversionPattern(patterns,
+      typeConverter, ctx,
+      /*enableSIMD*/ OptimizationLevel >= 3 && !disableSimdOption,
+      enableParallel);
 }
 
 void NNPAAccelerator::conversionTargetKrnlToLLVM(

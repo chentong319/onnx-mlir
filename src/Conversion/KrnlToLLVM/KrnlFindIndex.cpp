@@ -32,7 +32,7 @@ public:
 
   LogicalResult matchAndRewrite(Operation *op, ArrayRef<Value> operands,
       ConversionPatternRewriter &rewriter) const override {
-    auto findIndexOp = cast<KrnlFindIndexOp>(op);
+    auto findIndexOp = mlir::cast<KrnlFindIndexOp>(op);
     MLIRContext *ctx = findIndexOp.getContext();
     Location loc = findIndexOp.getLoc();
     KrnlFindIndexOpAdaptor operandAdaptor(operands);
@@ -63,14 +63,12 @@ public:
           llvm_unreachable("unexpected inputType");
         });
 
-    Type GType = operandAdaptor.getG()
-                     .getType()
-                     .cast<LLVM::LLVMStructType>()
-                     .getBody()[1];
-    Type VType = operandAdaptor.getV()
-                     .getType()
-                     .cast<LLVM::LLVMStructType>()
-                     .getBody()[1];
+    Type GType =
+        mlir::cast<LLVM::LLVMStructType>(operandAdaptor.getG().getType())
+            .getBody()[1];
+    Type VType =
+        mlir::cast<LLVM::LLVMStructType>(operandAdaptor.getV().getType())
+            .getBody()[1];
 
     // Remaining operands.
     Value extractedGPtr =

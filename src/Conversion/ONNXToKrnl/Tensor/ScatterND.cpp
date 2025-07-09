@@ -33,9 +33,9 @@ struct ONNXScatterNDOpLowering : public OpConversionPattern<ONNXScatterNDOp> {
     Value data = adaptor.getData();
     Value updates = adaptor.getUpdates();
     Value indices = adaptor.getIndices();
-    auto dataType = data.getType().cast<ShapedType>();
-    auto indicesType = indices.getType().cast<ShapedType>();
-    auto updatesType = updates.getType().cast<ShapedType>();
+    auto dataType = mlir::cast<ShapedType>(data.getType());
+    auto indicesType = mlir::cast<ShapedType>(indices.getType());
+    auto updatesType = mlir::cast<ShapedType>(updates.getType());
     int64_t dataRank = dataType.getRank();
     int64_t updatesRank = updatesType.getRank();
     int64_t indicesRank = indicesType.getRank();
@@ -45,9 +45,9 @@ struct ONNXScatterNDOpLowering : public OpConversionPattern<ONNXScatterNDOp> {
 
     // Convert the output type to MemRefType.
     Type convertedType = typeConverter->convertType(*op->result_type_begin());
-    assert(convertedType && convertedType.isa<MemRefType>() &&
+    assert(convertedType && mlir::isa<MemRefType>(convertedType) &&
            "Failed to convert type to MemRefType");
-    MemRefType outputMemRefType = convertedType.cast<MemRefType>();
+    MemRefType outputMemRefType = mlir::cast<MemRefType>(convertedType);
     int64_t outputRank = outputMemRefType.getShape().size();
     assert(outputRank == dataRank && "Output rank not equal to data rank");
 
@@ -69,10 +69,10 @@ struct ONNXScatterNDOpLowering : public OpConversionPattern<ONNXScatterNDOp> {
     //     output[indices[idx]] = updates[idx]
     //
     ValueRange loopDef = create.krnl.defineLoops(updatesRank);
-    DimsExpr lbs(updatesRank, LiteralIndexExpr(0)), ubs;
+    DimsExpr lbs(updatesRank, LitIE(0)), ubs;
     create.krnlIE.getShapeAsDims(updates, ubs);
     create.krnl.iterateIE(loopDef, loopDef, lbs, ubs,
-        [&](KrnlBuilder &createKrnl, ValueRange loopInd) {
+        [&](const KrnlBuilder &createKrnl, ValueRange loopInd) {
           // Insert code inside the loop.
           IndexExprScope innerLoopScope(createKrnl);
 
@@ -80,9 +80,9 @@ struct ONNXScatterNDOpLowering : public OpConversionPattern<ONNXScatterNDOp> {
           // The first (q-1) indexes traverse the iteration space defined by
           // indices.shape[:-1], which corresponds to the first (q-1) induction
           // variable in the loop iteration space.
-          DimsExpr indicesAccessFct;
-          getIndexExprList<DimIndexExpr>(loopInd, indicesAccessFct);
-          indicesAccessFct.truncate(indicesRank - 1);
+          DimsExpr indicesAccessFctFirst;
+          getIndexExprList<DimIndexExpr>(loopInd, indicesAccessFctFirst);
+          indicesAccessFctFirst.truncate(indicesRank - 1);
 
           // Access function for the output. Let r=rank(data), q=rank(indices).
           // The first indices.shape[-1] indexes are given by looking up the
@@ -91,14 +91,15 @@ struct ONNXScatterNDOpLowering : public OpConversionPattern<ONNXScatterNDOp> {
           DimsExpr outputAccessFct;
           for (unsigned i = 0; i < dataRank; ++i) {
             if (i < indicesRank - 1) {
-              IndexExpr ind = LiteralIndexExpr(i);
+              IndexExpr ind = LitIE(i);
+              DimsExpr indicesAccessFct(indicesAccessFctFirst);
               indicesAccessFct.emplace_back(ind);
               Value indexVal = createKrnl.loadIE(indices, indicesAccessFct);
               IndexExpr index = NonAffineIndexExpr(indexVal);
               outputAccessFct.emplace_back(index);
             } else {
-              IndexExpr index = SymbolIndexExpr(
-                  loopInd[std::min<unsigned>(i, loopInd.size() - 1)]);
+              IndexExpr index =
+                  SymIE(loopInd[std::min<unsigned>(i, loopInd.size() - 1)]);
               outputAccessFct.emplace_back(index);
             }
           }

@@ -35,7 +35,7 @@ public:
   LogicalResult matchAndRewrite(Operation *op, ArrayRef<Value> operands,
       ConversionPatternRewriter &rewriter) const override {
     // Get info from operands.
-    auto memsetOp = cast<KrnlMemsetOp>(op);
+    auto memsetOp = mlir::cast<KrnlMemsetOp>(op);
     bool delayed = memsetOp.getDelayed();
     KrnlMemsetOpAdaptor operandAdaptor(memsetOp);
     Value destMemRef(operandAdaptor.getDest());
@@ -44,20 +44,23 @@ public:
 
     // If delayed but the input memref has not normalized yet, do nothing.
     if (delayed &&
-        !destMemRef.getType().cast<MemRefType>().getLayout().isIdentity())
+        !mlir::cast<MemRefType>(destMemRef.getType()).getLayout().isIdentity())
       return failure();
 
+    // TODO, Flatten, and possibly parallelize/simd. Maybe add a mode to detect
+    // if/when mem override is allowed.
     MultiDialectBuilder<AffineBuilderKrnlMem, IndexExprBuilderForKrnl> create(
         rewriter, loc);
     IndexExprScope indexScope(create.affineKMem);
     SmallVector<IndexExpr, 4> ubs;
     create.krnlIE.getShapeAsDims(destMemRef, ubs);
     int rank = ubs.size();
-    SmallVector<IndexExpr, 4> lbs(rank, LiteralIndexExpr(0));
+    SmallVector<IndexExpr, 4> lbs(rank, LitIE(0));
     SmallVector<int64_t, 4> steps(rank, 1);
+    SmallVector<bool, 4> useParallel(rank, false);
     // Copy data,
-    create.affineKMem.forIE(lbs, ubs, steps,
-        [&](AffineBuilderKrnlMem &createAffine, ValueRange indices) {
+    create.affineKMem.forLoopsIE(lbs, ubs, steps, useParallel,
+        [&](const AffineBuilderKrnlMem &createAffine, ValueRange indices) {
           createAffine.store(destVal, destMemRef, indices);
         });
     rewriter.eraseOp(op);

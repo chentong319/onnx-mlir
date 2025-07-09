@@ -4,14 +4,15 @@
 
 //===------------------------ NNPACompilerOptions.hpp ---------------------===//
 //
-// Copyright 2022 The IBM Research Authors.
+// Copyright 2022-2024 The IBM Research Authors.
 //
 // =============================================================================
 //
 //
 //===----------------------------------------------------------------------===//
 
-#pragma once
+#ifndef ONNX_MLIR_NNPA_COMPILER_OPTIONS_H
+#define ONNX_MLIR_NNPA_COMPILER_OPTIONS_H
 
 #include "llvm/Support/CommandLine.h"
 
@@ -54,17 +55,31 @@ typedef enum {
   MuchFasterOpsWSU, /* FasterOpsWSU only if significantly faster. */
 } NNPAPlacementHeuristic;
 
+// Quantization type
+typedef enum {
+  symWeight,
+  asymWeight,
+  symActivation,
+  asymActivation,
+  autoQuantOpt,
+} NNPAQuantOptions;
+
 extern llvm::cl::OptionCategory OnnxMlirOptions;
 extern llvm::cl::OptionCategory OnnxMlirCommonOptions;
 extern llvm::cl::opt<onnx_mlir::NNPAEmissionTargetType> nnpaEmissionTarget;
-extern llvm::cl::opt<bool> nnpaClipToDLFloatRange;
-extern llvm::cl::opt<bool> nnpaEnableZHighToOnnx;
+extern llvm::cl::opt<bool> nnpaDisableZHighToOnnx;
 extern llvm::cl::opt<bool> nnpaEnableZHighDecomposeStickUnstick;
-extern llvm::cl::opt<bool> nnpaEnableCompilerStickUnstick;
+extern llvm::cl::opt<bool> nnpaDisableCompilerStickUnstick;
 extern llvm::cl::opt<bool> nnpaEnableScalarBcastBinary;
 extern llvm::cl::opt<NNPAPlacementHeuristic> nnpaPlacementHeuristic;
 extern llvm::cl::opt<bool> profileZHighIR;
 extern llvm::cl::opt<std::string> nnpaLoadDevicePlacementFile;
 extern llvm::cl::opt<std::string> nnpaSaveDevicePlacementFile;
+extern llvm::cl::opt<bool> nnpaDisableSaturation;
+extern llvm::cl::opt<bool> nnpaUseDynamicQuantizeLinearOnCPU;
+extern llvm::cl::opt<bool> nnpaUseDynamicQuantizeLinearOnCPUForScaleOffset;
+extern std::vector<NNPAQuantOptions> nnpaQuantDynamic;
+extern std::vector<std::string> nnpaQuantOpTypes;
 
 } // namespace onnx_mlir
+#endif

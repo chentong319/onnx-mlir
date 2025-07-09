@@ -16,6 +16,7 @@
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
 #include "mlir/IR/AffineExpr.h"
+#include "llvm/Support/Path.h"
 
 #include "src/Dialect/Krnl/DialectBuilder.hpp"
 #include "src/Dialect/Krnl/KrnlHelper.hpp"
@@ -160,7 +161,7 @@ DenseElementsAttr getDenseElementAttributeFromKrnlValue(Value value) {
       dyn_cast_or_null<mlir::KrnlGlobalOp>(value.getDefiningOp());
   if (globalOp)
     if (globalOp.getValue().has_value())
-      return globalOp.getValueAttr().dyn_cast<DenseElementsAttr>();
+      return mlir::dyn_cast<DenseElementsAttr>(globalOp.getValueAttr());
 
   return nullptr;
 }

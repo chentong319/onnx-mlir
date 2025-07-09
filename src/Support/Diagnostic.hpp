@@ -4,7 +4,7 @@
 
 //====--------------- Diagnostic.hpp - Diagnostic Utilities ---------------===//
 //
-// Copyright 2022 The IBM Research Authors.
+// Copyright 2022-2024 The IBM Research Authors.
 //
 // =============================================================================
 //
@@ -12,7 +12,8 @@
 //
 //===----------------------------------------------------------------------===//
 
-#pragma once
+#ifndef ONNX_MLIR_DIAGNOSTIC_H
+#define ONNX_MLIR_DIAGNOSTIC_H
 
 #include "mlir/IR/Operation.h"
 #include "mlir/Support/LogicalResult.h"
@@ -35,15 +36,22 @@ public:
     T max;
 
   public:
+    // Range is used in error situations, so having an assert is not very useful
+    // as that assert may crash the program instead of reporting the error
+    // condition. New approach is to report the error with an additional
+    // warning.
     Range(T min, T max) : min(min), max(max) {
-      assert(min <= max && "Illegal range");
+      if (!isValid())
+        llvm::errs() << "Warning: badly formed range(min=" << min
+                     << ", max=" << max << ")\n";
     }
+    bool isValid() { return min <= max; }
   };
 
   /// Diagnostic message for attribute value outside of a supplied range.
   template <typename T>
   static mlir::LogicalResult emitAttributeOutOfRangeError(mlir::Operation &op,
-      const llvm::Twine &attrName, T attrVal, Range<T> validRange);
+      const llvm::Twine &attrName, T attrVal, Range<T> range);
 
   /// Verifies whether 2 inputs have the same rank.
   template <typename T>
@@ -72,3 +80,4 @@ public:
 };
 
 } // namespace onnx_mlir
+#endif

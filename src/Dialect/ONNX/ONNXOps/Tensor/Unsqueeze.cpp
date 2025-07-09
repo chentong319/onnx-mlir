@@ -33,6 +33,9 @@ LogicalResult ONNXCommonUnsqueezeOpShapeHelper<OP_TYPE>::customComputeShape(
   typename OP_TYPE::Adaptor operandAdaptor(operands, op->getAttrDictionary());
   DimsExpr outputDims;
   Value data = operandAdaptor.getData();
+  if (!hasShapeAndRank(data)) {
+    return failure();
+  }
   int64_t dataRank = createIE->getShapedTypeRank(data);
 
   // Init state.
@@ -64,7 +67,7 @@ LogicalResult ONNXCommonUnsqueezeOpShapeHelper<OP_TYPE>::customComputeShape(
     if (std::find(unsqueezedAxes.begin(), unsqueezedAxes.end(), i) !=
         unsqueezedAxes.end())
       // found i in unsqueeze axles.
-      outputDims.emplace_back(LiteralIndexExpr(1));
+      outputDims.emplace_back(LitIE(1));
     else
       outputDims.emplace_back(createIE->getShapeAsDim(data, j++));
 
@@ -124,7 +127,7 @@ LogicalResult ONNXUnsqueezeV11OpShapeHelper::computeShape() {
 
 LogicalResult ONNXUnsqueezeOp::inferShapes(
     std::function<void(Region &)> doShapeInference) {
-  auto dataType = getData().getType().dyn_cast<RankedTensorType>();
+  auto dataType = mlir::dyn_cast<RankedTensorType>(getData().getType());
   if (!dataType)
     return success();
 
@@ -135,7 +138,7 @@ LogicalResult ONNXUnsqueezeOp::inferShapes(
 
 LogicalResult ONNXUnsqueezeV11Op::inferShapes(
     std::function<void(Region &)> doShapeInference) {
-  auto dataType = getData().getType().dyn_cast<RankedTensorType>();
+  auto dataType = mlir::dyn_cast<RankedTensorType>(getData().getType());
   if (!dataType)
     return success();
 

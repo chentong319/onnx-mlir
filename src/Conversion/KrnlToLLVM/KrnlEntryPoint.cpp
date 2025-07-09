@@ -4,7 +4,7 @@
 
 //===------ KrnlEntryPoint.cpp - Lower KrnlEntryPointOp -------------------===//
 //
-// Copyright 2019-2023 The IBM Research Authors.
+// Copyright 2019-2024 The IBM Research Authors.
 //
 // =============================================================================
 //
@@ -148,14 +148,16 @@ public:
     // OMInitCompatibleAccelX's signature is `i64 (i64)`.
     if (Attribute maccelAttr =
             module->getAttrOfType<::mlir::Attribute>("onnx-mlir.accels")) {
-      assert(
-          maccelAttr.isa<ArrayAttr>() && "onnx-mlir.accels must be ArrayAttr");
-      ArrayAttr accels = maccelAttr.cast<ArrayAttr>();
-      Value zeroI64 = create.llvm.constant(int64Ty, (int64_t)0);
+      assert(mlir::isa<ArrayAttr>(maccelAttr) &&
+             "onnx-mlir.accels must be ArrayAttr");
+      ArrayAttr accels = mlir::cast<ArrayAttr>(maccelAttr);
+      Value zeroI64 = create.llvm.constant(int64Ty, static_cast<int64_t>(0));
 
       for (uint64_t i = 0; i < accels.size(); ++i) {
-        assert(accels[i].isa<StringAttr>() && "Attribute must be StringAttr");
-        StringRef accelStr = accels.getValue()[i].cast<StringAttr>().getValue();
+        assert(
+            mlir::isa<StringAttr>(accels[i]) && "Attribute must be StringAttr");
+        StringRef accelStr =
+            mlir::cast<StringAttr>(accels.getValue()[i]).getValue();
         std::pair<StringRef, StringRef> NameAndVersion = accelStr.split('-');
         uint64_t versionNumberInHex =
             std::stoul(NameAndVersion.second.str(), nullptr, 16);
@@ -164,17 +166,17 @@ public:
 
         // Emit code for `if (OMInitCompatibleAccelX() == 0) then return NULL`.
         create.llvm.ifThenElse(/*cond=*/
-            [&](LLVMBuilder &createLLVM) {
+            [&](const LLVMBuilder &createLLVM) {
               // Call OMInitCompatibleAccelX.
-              Value versionNumberVal =
-                  createLLVM.constant(int64Ty, (int64_t)versionNumberInHex);
+              Value versionNumberVal = createLLVM.constant(
+                  int64Ty, static_cast<int64_t>(versionNumberInHex));
               Value isCompatible = createLLVM.call(
                   int64Ty, funcRef, ArrayRef<Value>({versionNumberVal}));
               // Condition: if (OMInitCompatibleAccelX() == 0)
               return createLLVM.icmp(
                   LLVM::ICmpPredicate::eq, isCompatible, zeroI64);
             }, /*then=*/
-            [&](LLVMBuilder &createLLVM) {
+            [&](const LLVMBuilder &createLLVM) {
               // return NULL.
               createLLVM._return(createLLVM.null(getI8PointerType(context)));
             });
@@ -199,9 +201,8 @@ public:
     // struct but input types are unpacked into a single list of scalar types.
     auto *staticEntryPointFunc =
         module.lookupSymbol(staticEntryPointFuncName.lower());
-    auto staticEntryPointFuncTy = cast<LLVM::LLVMFuncOp>(staticEntryPointFunc)
-                                      .getFunctionType()
-                                      .cast<LLVM::LLVMFunctionType>();
+    auto staticEntryPointFuncTy = mlir::cast<LLVM::LLVMFunctionType>(
+        mlir::cast<LLVM::LLVMFuncOp>(staticEntryPointFunc).getFunctionType());
     LLVM_DEBUG(llvm::dbgs() << "Static entry point function type: "
                             << staticEntryPointFuncTy << "\n");
     // Static entry point is wrapped with prefix `_mlir_ciface` automatically by
@@ -215,13 +216,13 @@ public:
            isa<LLVM::LLVMFuncOp>(wrappedStaticEntryPointFunc) &&
            "entry point func must exist and be an llvm func op");
     auto wrappedStaticEntryPointOp =
-        cast<LLVM::LLVMFuncOp>(wrappedStaticEntryPointFunc);
-    auto wrappedStaticEntryPointTy = wrappedStaticEntryPointOp.getFunctionType()
-                                         .cast<LLVM::LLVMFunctionType>();
+        mlir::cast<LLVM::LLVMFuncOp>(wrappedStaticEntryPointFunc);
+    auto wrappedStaticEntryPointTy = mlir::cast<LLVM::LLVMFunctionType>(
+        wrappedStaticEntryPointOp.getFunctionType());
 
     Value omTensorPtrArr = RuntimeAPI::callApi(rewriter, loc, apiRegistry,
         RuntimeAPI::API::GET_OMT_ARRAY, {omTensorInputs});
-    Value one = create.llvm.constant(int64Ty, (int64_t)1);
+    Value one = create.llvm.constant(int64Ty, static_cast<int64_t>(1));
 
     // Prepare MemRefs as inputs for the wrapped static entry point function.
     // MemRefs are filled with information from user' OMTensor inputs.
@@ -232,15 +233,16 @@ public:
     // entry point instead of the wrapped static entry point.
     Type memRefOutTy = staticEntryPointFuncTy.getReturnTypes()[0];
     Type memRefOutPtrTy = getPointerType(context, memRefOutTy);
-    Value ptrToOutMemRef =
+    Value ptrToOutMemRef = // alloca ok as there is only one entry point.
         create.llvm._alloca(memRefOutPtrTy, memRefOutTy, one, /*alignment=*/0);
     staticInputs.emplace_back(ptrToOutMemRef);
 
     // Start with param 1 because 0 is the return value.
     for (size_t i = 1; i < wrappedStaticEntryPointTy.getNumParams(); i++) {
       // Call API function to retrieve the i-th dynamic memref.
-      Value omTensorPtrAddr = create.llvm.getElemPtr(omTensorPtrAddrTy,
-          opaquePtrTy, omTensorPtrArr, ArrayRef<LLVM::GEPArg>{(int32_t)i - 1});
+      Value omTensorPtrAddr =
+          create.llvm.getElemPtr(omTensorPtrAddrTy, opaquePtrTy, omTensorPtrArr,
+              ArrayRef<LLVM::GEPArg>{static_cast<int32_t>(i) - 1});
       Value omTensorPtr = create.llvm.load(opaquePtrTy, omTensorPtrAddr);
 
       // Create a (static) memref type corresponding to the i-th memref input to
@@ -248,7 +250,7 @@ public:
       // Original input is shifted by 1 in the iface func.
       Type memRefInTy = typeConverter.convertType(origInputMemRefTypes[i - 1]);
       Type memRefInPtrTy = getPointerType(context, memRefInTy);
-      Value ptrToMemRef =
+      Value ptrToMemRef = // alloca ok as there is only one entry point.
           create.llvm._alloca(memRefInPtrTy, memRefInTy, one, /*alignment=*/0);
 
       // Fill in the memref underlying ptrToMemRef with information extracted
@@ -264,9 +266,10 @@ public:
     // output.
     create.llvm.call({}, wrappedStaticEntryPointFuncName, staticInputs);
     Value outMemRefs = create.llvm.load(memRefOutTy, ptrToOutMemRef);
-    auto outMemRefsType = outMemRefs.getType().dyn_cast<LLVM::LLVMStructType>();
+    auto outMemRefsType =
+        mlir::dyn_cast<LLVM::LLVMStructType>(outMemRefs.getType());
 
-    std::vector<mlir::Value> outMemRefList;
+    std::vector<Value> outMemRefList;
     if (numOutputs == 1) {
       // If only one output tensor exists, the tensor's corresponding memref
       // descriptor will be returned as is.
@@ -282,9 +285,10 @@ public:
       }
     }
 
-    Value numOutput =
-        create.llvm.constant(int64Ty, (int64_t)outMemRefList.size());
-    // Assume that OMTensor pointer size is 8
+    Value numOutput = create.llvm.constant(
+        int64Ty, static_cast<int64_t>(outMemRefList.size()));
+    // Assume that OMTensor pointer size is 8.
+    // Alloca ok as its only for 1 small data structure per parameters.
     Value outOmtPtrsArr = create.llvm._alloca(
         omTensorPtrAddrTy, opaquePtrTy, numOutput, /*alignment=*/0);
 
@@ -292,10 +296,10 @@ public:
       // Get the i-th memref returned, convert to a dynamic memref and store it
       // in the wrappedOutput.
       Value memRef = outMemRefList.at(i);
-      auto outMemRefTy = memRef.getType().dyn_cast<LLVM::LLVMStructType>();
+      auto outMemRefTy = mlir::dyn_cast<LLVM::LLVMStructType>(memRef.getType());
       int64_t outMemRefRank = krnl::getRankFromMemRefType(outMemRefTy);
       Value outMemRefRankVal =
-          create.llvm.constant(int64Ty, (int64_t)outMemRefRank);
+          create.llvm.constant(int64Ty, static_cast<int64_t>(outMemRefRank));
       Value outOMTensor = RuntimeAPI::callApi(rewriter, loc, apiRegistry,
           RuntimeAPI::API::CREATE_OMTENSOR, {outMemRefRankVal});
       // If output is a constant tensor or a block argument, OMTensor does not
@@ -307,8 +311,9 @@ public:
           origOutputMemRefTypes[i].getElementType(), outOMTensor, outOwning,
           rewriter, loc, apiRegistry, module);
 
-      Value omTensorPtrAddr = create.llvm.getElemPtr(omTensorPtrAddrTy,
-          opaquePtrTy, outOmtPtrsArr, ArrayRef<LLVM::GEPArg>{(int32_t)i});
+      Value omTensorPtrAddr =
+          create.llvm.getElemPtr(omTensorPtrAddrTy, opaquePtrTy, outOmtPtrsArr,
+              ArrayRef<LLVM::GEPArg>{static_cast<int32_t>(i)});
       create.llvm.store(outOMTensor, omTensorPtrAddr);
     }
 
@@ -328,7 +333,8 @@ private:
       LLVM::LLVMFuncOp &dynamicEntryPointFunc, Location &loc) const {
     // Add entry block:
     auto *entryPointEntryBlock = new Block();
-    auto dynEntryPointFuncType = dynEntryPoint.cast<LLVM::LLVMFunctionType>();
+    auto dynEntryPointFuncType =
+        mlir::cast<LLVM::LLVMFunctionType>(dynEntryPoint);
     dynamicEntryPointFunc.push_back(entryPointEntryBlock);
     llvm::SmallVector<Type, 4> argTypes;
     for (size_t i = 0; i < dynEntryPointFuncType.getNumParams(); i++)
@@ -352,17 +358,17 @@ private:
     Value dataPtr = RuntimeAPI::callApi(
         rewriter, loc, apiRegistry, RuntimeAPI::API::GET_DATA, {rtMemRef});
     dataPtr = create.llvm.bitcast(
-        memRefTy.cast<LLVM::LLVMStructType>().getBody()[0], dataPtr);
+        mlir::cast<LLVM::LLVMStructType>(memRefTy).getBody()[0], dataPtr);
     memRef = create.llvm.insertValue(memRefTy, memRef, dataPtr, {0});
     memRef = create.llvm.insertValue(memRefTy, memRef, dataPtr, {1});
 
     // Use zero offset now.
-    Value zero = create.llvm.constant(int64Ty, (int64_t)0);
+    Value zero = create.llvm.constant(int64Ty, static_cast<int64_t>(0));
     memRef = create.llvm.insertValue(memRefTy, memRef, zero, {2});
 
     // Get rank, sizes array ptr and strides array ptr.
     auto rank =
-        krnl::getRankFromMemRefType(memRefTy.cast<LLVM::LLVMStructType>());
+        krnl::getRankFromMemRefType(mlir::cast<LLVM::LLVMStructType>(memRefTy));
     Value sizesArrayPtr = RuntimeAPI::callApi(rewriter, loc, apiRegistry,
         RuntimeAPI::API::GET_DATA_SHAPE, {rtMemRef});
     Value stridesArrayPtr = RuntimeAPI::callApi(rewriter, loc, apiRegistry,
@@ -372,14 +378,14 @@ private:
       // Insert size of the dimension.
       Value dimSizePtr =
           create.llvm.getElemPtr(getPointerType(context, int64Ty), int64Ty,
-              sizesArrayPtr, ArrayRef<LLVM::GEPArg>{(int32_t)i});
+              sizesArrayPtr, ArrayRef<LLVM::GEPArg>{static_cast<int32_t>(i)});
       Value dimSize = create.llvm.load(int64Ty, dimSizePtr);
       memRef = create.llvm.insertValue(memRefTy, memRef, dimSize, {3, i});
 
       // Insert stride of the dimension.
       auto dimStridePtr =
           create.llvm.getElemPtr(getPointerType(context, int64Ty), int64Ty,
-              stridesArrayPtr, ArrayRef<LLVM::GEPArg>{(int32_t)i});
+              stridesArrayPtr, ArrayRef<LLVM::GEPArg>{static_cast<int32_t>(i)});
       auto dimStride = create.llvm.load(int64Ty, dimStridePtr);
       memRef = create.llvm.insertValue(memRefTy, memRef, dimStride, {4, i});
     }
@@ -406,31 +412,6 @@ private:
         rewriter.getI64Type(), {rewriter.getI64Type()});
   }
 
-  // Emit code for `IF lhs != rhs THEN return null ELSE do nothing`
-  void equalOrFailed(ModuleOp &module, PatternRewriter &rewriter, Location loc,
-      Value lhs, Value rhs, std::string errorMsg = "",
-      bool appendRHS = true) const {
-    MLIRContext *context = rewriter.getContext();
-    MultiDialectBuilder<LLVMBuilder> create(rewriter, loc);
-    create.llvm.ifThenElse(/*cond=*/
-        [&](LLVMBuilder &createLLVM) {
-          return createLLVM.icmp(LLVM::ICmpPredicate::ne, lhs, rhs);
-        }, /*then=*/
-        [&](LLVMBuilder &createLLVM) {
-          MultiDialectBuilder<LLVMBuilder, KrnlBuilder> create(createLLVM);
-          // Print an error message.
-          if (appendRHS)
-            create.krnl.printf(
-                StringRef(errorMsg), rhs, rewriter.getI64Type(), true);
-          else
-            create.krnl.printf(StringRef(errorMsg + "\n"));
-          // Set errno.
-          krnl::emitErrNo(module, rewriter, loc, EINVAL);
-          // Return NULL.
-          create.llvm._return(create.llvm.null(getI8PointerType(context)));
-        });
-  }
-
   void emitVerificationCodeForInputTensors(ModuleOp &module,
       PatternRewriter &rewriter, Location loc,
       const RuntimeAPIRegistry &apiRegistry, Value omTensorInputs,
@@ -448,7 +429,7 @@ private:
 
     // Verify the number of inputs.
     equalOrFailed(module, rewriter, loc,
-        create.llvm.constant(int64Ty, (int64_t)inputNum),
+        create.llvm.constant(int64Ty, static_cast<int64_t>(inputNum)),
         RuntimeAPI::callApi(rewriter, loc, apiRegistry,
             RuntimeAPI::API::GET_OMTENSOR_LIST_SIZE, {omTensorInputs}),
         "Wrong number of input tensors: expect " + std::to_string(inputNum) +
@@ -459,9 +440,9 @@ private:
         RuntimeAPI::API::GET_OMT_ARRAY, {omTensorInputs});
     for (int64_t i = 0; i < inputNum; ++i) {
       // Call API function to retrieve the i-th omTensor.
-      Value omTensorPtrAddr =
-          create.llvm.getElemPtr(getPointerType(context, opaquePtrTy),
-              opaquePtrTy, omTensorPtrArr, ArrayRef<LLVM::GEPArg>{(int32_t)i});
+      Value omTensorPtrAddr = create.llvm.getElemPtr(
+          getPointerType(context, opaquePtrTy), opaquePtrTy, omTensorPtrArr,
+          ArrayRef<LLVM::GEPArg>{static_cast<int32_t>(i)});
       Value omTensorPtr = create.llvm.load(opaquePtrTy, omTensorPtrAddr);
 
       // Verify data type.
@@ -485,7 +466,7 @@ private:
       auto JSONDimArray = JSONItem->getArray("dims");
       int64_t rank = JSONDimArray->size();
       equalOrFailed(module, rewriter, loc,
-          create.llvm.constant(int64Ty, (int64_t)rank),
+          create.llvm.constant(int64Ty, static_cast<int64_t>(rank)),
           RuntimeAPI::callApi(rewriter, loc, apiRegistry,
               RuntimeAPI::API::GET_DATA_RANK, {omTensorPtr}),
           "Wrong rank for the input " + std::to_string(i) + ": expect " +
@@ -496,9 +477,10 @@ private:
           RuntimeAPI::API::GET_DATA_SHAPE, {omTensorPtr});
       for (int d = 0; d < rank; ++d) {
         // Get actual dimension size.
-        Value actualDim = create.llvm.load(int64Ty,
-            create.llvm.getElemPtr(getPointerType(context, int64Ty), int64Ty,
-                sizesArrayPtr, ArrayRef<LLVM::GEPArg>{(int32_t)d}));
+        Value actualDim = create.llvm.load(
+            int64Ty, create.llvm.getElemPtr(getPointerType(context, int64Ty),
+                         int64Ty, sizesArrayPtr,
+                         ArrayRef<LLVM::GEPArg>{static_cast<int32_t>(d)}));
         // Get reference dimension size.
         auto JSONDimValue = (*JSONDimArray)[d].getAsInteger();
         assert(JSONDimValue && "failed to get value");
@@ -508,12 +490,13 @@ private:
           // In case that the reference dimension size is unknown, verify that
           // the actual dimension size is a non-negative value.
           create.llvm.ifThenElse(/*cond=*/
-              [&](LLVMBuilder &createLLVM) {
-                Value zero = createLLVM.constant(int64Ty, (int64_t)d);
+              [&](const LLVMBuilder &createLLVM) {
+                Value zero =
+                    createLLVM.constant(int64Ty, static_cast<int64_t>(d));
                 return createLLVM.icmp(
                     LLVM::ICmpPredicate::slt, actualDim, zero);
               }, /*then=*/
-              [&](LLVMBuilder &createLLVM) {
+              [&](const LLVMBuilder &createLLVM) {
                 MultiDialectBuilder<LLVMBuilder, KrnlBuilder> create(
                     createLLVM);
                 // Print an error message.
@@ -530,7 +513,8 @@ private:
                     create.llvm.null(getI8PointerType(context)));
               });
         } else {
-          Value referenceDim = create.llvm.constant(int64Ty, (int64_t)dim);
+          Value referenceDim =
+              create.llvm.constant(int64Ty, static_cast<int64_t>(dim));
           equalOrFailed(module, rewriter, loc, referenceDim, actualDim,
               "Wrong size for the dimension " + std::to_string(d) +
                   " of the input " + std::to_string(i) + ": expect " +

@@ -184,8 +184,10 @@ private:
   ModuleOp module_;
   OpBuilder builder_;
 
-  // onnxop: list of versions for dialect
+  // onnxop: list of versions supported by onnx-mlir for dialect
   std::map<std::string, std::vector<int>> op_dialect_version_map_;
+  // onnxop: list of versions for dialect
+  std::map<std::string, std::vector<int>> op_opsets_map_;
   // onnxop: the top version in third_part/onnx
   std::map<std::string, int> op_dialect_top_version_map_;
 
@@ -255,9 +257,9 @@ private:
 
   static onnx::TypeProto fromMlirToONNXType(Type mlirType) {
     onnx::TypeProto onnxType;
-    if (mlirType.isa<NoneType>()) {
+    if (mlir::isa<NoneType>(mlirType)) {
       // Done: Uninitialized TypeProto onnxType represents NoneType.
-    } else if (auto mlirTensorType = dyn_cast<TensorType>(mlirType)) {
+    } else if (auto mlirTensorType = mlir::dyn_cast<TensorType>(mlirType)) {
       onnx::TypeProto::Tensor &onnxTensorType = *onnxType.mutable_tensor_type();
       onnxTensorType.set_elem_type(
           mlirTypeToOnnxType(mlirTensorType.getElementType()));
@@ -340,9 +342,10 @@ private:
       assert(elem_type.value_case() == onnx::TypeProto::kTensorType &&
              "expect tensor inside sequence type");
       Type mlir_elem_type = ImportTensorType(elem_type, dim_params);
-      if (!mlir_elem_type.isa<ShapedType>())
+      if (!mlir::isa<ShapedType>(mlir_elem_type))
         llvm_unreachable("Seq type is incorrect");
-      Type seq_type = mlir::SeqType::get(mlir_elem_type.cast<ShapedType>(), -1);
+      Type seq_type =
+          mlir::SeqType::get(mlir::cast<ShapedType>(mlir_elem_type), -1);
       return seq_type;
     }
     llvm_unreachable("unexpected type");
@@ -786,8 +789,9 @@ private:
         if (j < outputMap.size() && outputMap[j] >= MAX_NUM_TYPES) {
           // Mapping gives a connection with an input.
           Type inputType = inputs[outputMap[j] - MAX_NUM_TYPES].getType();
-          if (inputType.isa<TensorType>()) {
-            Type elementType = inputType.cast<TensorType>().getElementType();
+          if (mlir::isa<TensorType>(inputType)) {
+            Type elementType =
+                mlir::cast<TensorType>(inputType).getElementType();
             auto outType = UnrankedTensorType::get(elementType);
             outputTypes.emplace_back(outType);
           } else {
@@ -821,7 +825,7 @@ private:
                "Op contains subgraph attributes but does not "
                "implement HasOnnxSubgraphOpInterface interface.");
         auto opWithSubgraph =
-            cast<HasOnnxSubgraphOpInterface>(op.getOperation());
+            mlir::cast<HasOnnxSubgraphOpInterface>(op.getOperation());
         auto regionIdx = opWithSubgraph.getSubgraphRegionIdx(attr.name());
         auto &region = op->getRegion(regionIdx);
         region.push_back(new Block);
@@ -837,7 +841,7 @@ private:
       }
     }
     if (auto opWithTypeInference =
-            dyn_cast<ResultTypeInferenceOpInterface>(op.getOperation())) {
+            mlir::dyn_cast<ResultTypeInferenceOpInterface>(op.getOperation())) {
       auto outTypes = opWithTypeInference.resultTypeInference();
       for (int i = 0; i < node.output().size(); i++) {
         OpResult result = op->getResult(i);
@@ -888,7 +892,7 @@ private:
     getNodeInputs(node, inputs);
     auto attributes = ImportNodeAttributes(node);
     std::vector<Type> outputTypes;
-    auto inputType = inputs[0].getType().cast<TensorType>();
+    auto inputType = mlir::cast<TensorType>(inputs[0].getType());
     if (inputType.getElementType().isInteger(64)) {
       outputTypes.emplace_back(
           mlir::ONNXStringType::get(builder_.getContext()));
@@ -904,10 +908,15 @@ private:
     std::vector<NamedAttribute> attributes;
     for (int i = 0; i < node.attribute_size(); ++i) {
       auto attr = node.attribute(i);
-      auto mlir_type = convertONNXTypeToMLIRType(
-          builder_, static_cast<onnx::TensorProto_DataType>(attr.i()));
-      Attribute mlirAttr = TypeAttr::get(mlir_type);
-      attributes.push_back(builder_.getNamedAttr(attr.name(), mlirAttr));
+      if (attr.name() == "to") {
+        auto mlir_type = convertONNXTypeToMLIRType(
+            builder_, static_cast<onnx::TensorProto_DataType>(attr.i()));
+        Attribute mlirAttr = TypeAttr::get(mlir_type);
+        attributes.push_back(builder_.getNamedAttr(attr.name(), mlirAttr));
+      } else {
+        NamedAttribute na = convertOnnxAttributeProtoToMlirNamedAttribute(attr);
+        attributes.push_back(na);
+      }
     }
 
     // If the node has a name, then import it.
@@ -1032,7 +1041,7 @@ private:
       std::vector<Value> inputs;
       getNodeInputs(node, inputs);
       Type elementType =
-          inputs[0].getType().cast<TensorType>().getElementType();
+          mlir::cast<TensorType>(inputs[0].getType()).getElementType();
 
       llvm::SmallVector<Attribute, 2> values(
           1, builder_.getZeroAttr(elementType));
@@ -1074,7 +1083,7 @@ private:
     const Type elementType = builder_.getIntegerType(64);
     const auto attributes = ImportNodeAttributes(node);
     for (auto attr : attributes) {
-      if (auto arrayAttr = attr.getValue().dyn_cast<ArrayAttr>()) {
+      if (auto arrayAttr = mlir::dyn_cast<ArrayAttr>(attr.getValue())) {
         const auto tensorType =
             RankedTensorType::get({(int64_t)arrayAttr.size()}, elementType);
         auto constantDenseAttribute =
@@ -1123,38 +1132,74 @@ private:
     if (current_opset_it == opset_map_.end())
       return "";
 
-    int current_opset = current_opset_it->second;
+    const int current_opset = current_opset_it->second;
 
     LLVM_DEBUG(llvm::dbgs() << DEBUG_TYPE << ": Importing ONNX"
                             << node.op_type() << " (" << node.name() << ")"
                             << ", Opset: " << current_opset << "\n");
 
-    auto opset_list_it = op_dialect_version_map_.find(node.op_type());
+    const auto supported_opset_list_it =
+        op_dialect_version_map_.find(node.op_type());
+    const auto opset_list_it = op_opsets_map_.find(node.op_type());
 
     // Custom ops may not be present in op_dialect_version_map_. If no version
     // info is found, treat as unversioned (no renaming).
-    if (opset_list_it == op_dialect_version_map_.end())
+    if (supported_opset_list_it == op_dialect_version_map_.end() ||
+        opset_list_it == op_opsets_map_.end())
       return "";
 
-    auto opset_list = opset_list_it->second;
+    // To determine the opset version for a node/op:
+    // 1: Determine the latest valid opset version. This is the newest version
+    // in this opset-version-map that is older or equal to the current graph
+    // opset. 2:_ Select the newest version from the versions supported by
+    // onnx-mlir that is equal or newer to the latest valid opset version. This
+    // allows it to skip over opset versions, that have a newer backwards
+    // compatible version.
+    // Example:
+    // Versions in onnx and supported by onnx-mlir:[3, 5].
+    // Graph opset version to node version: 3 -> 3, 4 -> 3, 5 -> 5
+    //
+    // Versions in onnx: [7, 9, 10].
+    // Version 10 is backwards compatible to version 9.
+    // Version supported by onnx-mlir: [7, 10].
+    // Graph opset version to node version: 7 -> 7, 8 -> 7, 9 -> 10, 10 -> 10
 
-    // A new opset is added to onnx-mlir when it becomes imcompactible.
-    // But the lowest opset in op_dialect_version_map_ is an exception.
-    // It is the current opset when onnx-mlir project is started.
-    // All opset lower than the last opset should use the last opset(version)
+    // Get the newest opset version for the op that is older or equal to the
+    // model opset version. Use the oldest version as fallback
+    int newestValidOpsetVersion = opset_list_it->second.back();
+    for (int opset : opset_list_it->second) {
+      if (opset <= current_opset) {
+        newestValidOpsetVersion = opset;
+        break;
+      }
+    }
+
+    const auto supported_opset_list = supported_opset_list_it->second;
+
+    // A new opset is added to onnx-mlir when it becomes incompatible.
+    // All opset newest than the last opset should use the last opset(version)
     if (node.domain().compare("ai.onnx.ml") != 0 &&
-        current_opset < opset_list.back() &&
-        current_opset < MINIMUM_SUPPORTED_OPSET)
-      llvm::outs() << "Warning: ONNX " << node.op_type()
-                   << " in your model is using Opset " << current_opset
+        newestValidOpsetVersion < supported_opset_list.back() &&
+        newestValidOpsetVersion < MINIMUM_SUPPORTED_OPSET)
+      llvm::outs() << "\nWarning: ONNX " << node.op_type()
+                   << " in your model is using Opset "
+                   << newestValidOpsetVersion
                    << ", which is quite old. Please consider regenerating your "
-                      "model with a newer Opset.\n";
+                      "model with a newer Opset.\n\n";
 
-    for (int i = opset_list.size() - 1; i > 0; i--) {
-      if (current_opset < opset_list[i - 1]) {
-        LLVM_DEBUG(llvm::dbgs() << DEBUG_TYPE << ":   - use Opset "
-                                << opset_list[i] << "\n");
-        return "V" + std::to_string(opset_list[i]);
+    if (newestValidOpsetVersion >= supported_opset_list.front())
+      return ""; // Use the newest version
+
+    // Iterate over all supported opsets, starting with the oldest version.
+    // Select the oldest version that is the same or newer as the version the
+    // model uses. Special case: The newest supported version has no version
+    // suffix
+    for (int opset : llvm::reverse(supported_opset_list)) {
+      if (opset >= newestValidOpsetVersion &&
+          opset != supported_opset_list.front()) {
+        LLVM_DEBUG(
+            llvm::dbgs() << DEBUG_TYPE << ":   - use Opset " << opset << "\n");
+        return "V" + std::to_string(opset);
       }
     }
     return "";
@@ -1412,8 +1457,12 @@ private:
     const Value *valPtr = frontend_symbols_.GetByOnnxName(output.name());
     Value val = *valPtr;
     if (output.type().value_case() == onnx::TypeProto::kTensorType) {
+      Type outTy = ImportType(output.type(), dim_params);
+      if (std::getenv("IMPORTER_FORCE_DYNAMIC"))
+        outTy = UnrankedTensorType::get(
+            mlir::cast<TensorType>(outTy).getElementType());
       if (output.type().tensor_type().has_shape()) {
-        val.setType(ImportType(output.type(), dim_params));
+        val.setType(outTy);
       }
       ret_types.emplace_back(val.getType());
     } else {
@@ -1449,7 +1498,7 @@ private:
       SmallVector<NamedAttribute, 2> argAttrs;
       for (size_t k = 0; k < funcAttrsToMove.size(); ++k) {
         if (i < funcAttrsToMove[k].size()) {
-          auto name = (funcAttrsToMove[k].getValue()[i]).cast<StringAttr>();
+          auto name = mlir::cast<StringAttr>(funcAttrsToMove[k].getValue()[i]);
           if (name) {
             NamedAttribute namedAttr =
                 builder_.getNamedAttr(argAttrNames[k], name);
@@ -1584,9 +1633,9 @@ int readAndStripComments(
     if (line->contains("//")) {
       // Not stripping end-of-line comments because there's no robust way to
       // distinguish them from valid uses of // in the json itself.
-      llvm::errs() << "Warning: possible invalid end-of-line // comment in "
+      llvm::errs() << "\nWarning: possible invalid end-of-line // comment in "
                       "json input file "
-                   << fname.str() << ":" << line.line_number() << "\n";
+                   << fname.str() << ":" << line.line_number() << "\n\n";
     }
     contents.append(*line);
   }

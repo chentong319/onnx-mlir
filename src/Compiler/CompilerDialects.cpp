@@ -38,6 +38,7 @@ DialectRegistry registerDialects(ArrayRef<accel::Accelerator::Kind> accels) {
   registry.insert<cf::ControlFlowDialect>();
   registerOpenMPDialectTranslation(registry);
   registerHISIMComputationOpInterfaceExternalModels(registry);
+  mlir::memref::registerRuntimeVerifiableOpInterfaceExternalModels(registry);
 
   // Initialize accelerator(s) if required.
   accel::initAccelerators(accels);
@@ -46,8 +47,9 @@ DialectRegistry registerDialects(ArrayRef<accel::Accelerator::Kind> accels) {
   for (auto *accel : accel::Accelerator::getAccelerators())
     accel->registerDialects(registry);
 
-  if (useOldBufferization)
-    memref::registerAllocationOpInterfaceExternalModels(registry);
+  // Register interface needed by both old and new buffer deallocation pass.
+  memref::registerAllocationOpInterfaceExternalModels(registry);
+  arith::registerBufferDeallocationOpInterfaceExternalModels(registry);
 
   return registry;
 }

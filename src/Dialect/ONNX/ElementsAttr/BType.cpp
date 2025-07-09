@@ -18,15 +18,15 @@ namespace onnx_mlir {
 
 BType btypeOfMlirType(Type type) {
   // clang-format off
-  if (type.isa<Float64Type>())        return BType::DOUBLE;
-  if (type.isa<Float32Type>())        return BType::FLOAT;
-  if (type.isa<Float16Type>())        return BType::FLOAT16;
-  if (type.isa<BFloat16Type>())       return BType::BFLOAT16;
-  if (type.isa<Float8E4M3FNType>())   return BType::FLOAT8E4M3FN;
-  if (type.isa<Float8E4M3FNUZType>()) return BType::FLOAT8E4M3FNUZ;
-  if (type.isa<Float8E5M2Type>())     return BType::FLOAT8E5M2;
-  if (type.isa<Float8E5M2FNUZType>()) return BType::FLOAT8E5M2FNUZ;
-  auto itype = type.cast<IntegerType>();
+  if (mlir::isa<Float64Type>(type))        return BType::DOUBLE;
+  if (mlir::isa<Float32Type>(type))        return BType::FLOAT;
+  if (mlir::isa<Float16Type>(type))        return BType::FLOAT16;
+  if (mlir::isa<BFloat16Type>(type))       return BType::BFLOAT16;
+  if (mlir::isa<Float8E4M3FNType>(type))   return BType::FLOAT8E4M3FN;
+  if (mlir::isa<Float8E4M3FNUZType>(type)) return BType::FLOAT8E4M3FNUZ;
+  if (mlir::isa<Float8E5M2Type>(type))     return BType::FLOAT8E5M2;
+  if (mlir::isa<Float8E5M2FNUZType>(type)) return BType::FLOAT8E5M2FNUZ;
+  auto itype = mlir::cast<IntegerType>(type);
   switch (itype.getWidth()) {
     case  1: return BType::BOOL;
     case  8: return itype.isUnsigned() ? BType::UINT8  : BType::INT8;
@@ -55,10 +55,10 @@ Type mlirTypeOfBType(BType btype, MLIRContext *ctx) {
     case BType::FLOAT          : return b.getF32Type();
     case BType::FLOAT16        : return b.getF16Type();
     case BType::BFLOAT16       : return b.getBF16Type();
-    case BType::FLOAT8E4M3FN   : return b.getFloat8E4M3FNType();
-    case BType::FLOAT8E4M3FNUZ : return b.getFloat8E4M3FNUZType();
-    case BType::FLOAT8E5M2     : return b.getFloat8E5M2Type();
-    case BType::FLOAT8E5M2FNUZ : return b.getFloat8E5M2FNUZType();
+    case BType::FLOAT8E4M3FN   : return b.getType<Float8E4M3FNType>();
+    case BType::FLOAT8E4M3FNUZ : return b.getType<Float8E4M3FNUZType>();
+    case BType::FLOAT8E5M2     : return b.getType<Float8E5M2Type>();
+    case BType::FLOAT8E5M2FNUZ : return b.getType<Float8E5M2FNUZType>();
     default: llvm_unreachable("unsupported data type");
   }
   // clang-format on

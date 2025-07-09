@@ -45,7 +45,7 @@ def Krnl_Dialect : Dialect {
   ];
 }
 
-def StringType : Type<CPred<"$_self.isa<krnl::StringType>()">, "string type">;
+def StringType : Type<CPred<"mlir::isa<krnl::StringType>($_self)">, "string type">;
 
 // Require regions to have krnl.terminate terminator operation.
 def ImplicitKrnlTerminator : SingleBlockImplicitTerminator<"KrnlTerminatorOp">;
@@ -56,9 +56,9 @@ def KrnlCallOp : Op<Krnl_Dialect, "call",
   let summary = "call operation";
   let description = [{
     The call operation provides a generic way to replace an ONNX Op with a call
-    to an external function at Krnl level. 
-    `funcName` attributes determines which function to call. 
-    `parameters` is the inputs to Krnl.Call. It includes the outputs and inputs 
+    to an external function at Krnl level.
+    `funcName` attributes determines which function to call.
+    `parameters` is the inputs to Krnl.Call. It includes the outputs and inputs
     of the ONNX Op. The outputs and inputs are already lowered to MemRefs.
     The external function is assumed NOT to allocate or free any memory.
     'numOfOutput` attribute to tell how manu outputs Memref in parameters.
@@ -70,7 +70,7 @@ def KrnlCallOp : Op<Krnl_Dialect, "call",
     of the user.
     In Krnl To llvm lowering, the parameters and attributes will be lowered to
     parameters of the llvm function call.
-  
+
     Several builder is defined to help translating an ONNX Op to Krnl.Call.
     User can provides the allocated MemRefs for outputs and the inputs
     separately. The inputs are usually the operands of the ONNX Op.
@@ -89,6 +89,13 @@ def KrnlCallOp : Op<Krnl_Dialect, "call",
       DefaultValuedAttr<SI64Attr, "1">:$numOfOutput,
       Variadic<AnyType>:$parameters);
 
+  // Return Value for the Call.
+  // No return if the type is NoneType (void in llvm)
+  // Only scalar type is supported now.
+  // In future, return of memref can be supported with pointer of OMTensor.
+  // The returned memref will be created inside the call. 
+  let results = (outs Variadic<AnyTypeOf<[AnyFloat, AnyInteger]>>:$returnValue);
+
   // builders to build KrnlCallOp from op and operands, helping conversion from
   // onnx to krnl.
   // The name of function can be determined by the op name and elemnt type of
@@ -96,6 +103,8 @@ def KrnlCallOp : Op<Krnl_Dialect, "call",
   // Attributes of the op will be propagated to KrnlCallOp if the copyAttrs is
   // true. Or the attribute names can be specified.
   let builders = [
+      OpBuilder<(ins "std::string":$funcNameStr, "int64_t":$numOfOutput, "mlir::ValueRange":$operands)>,
+      OpBuilder<(ins "mlir::StringAttr":$funcNameStr, "IntegerAttr":$numOfOutput, "mlir::ValueRange":$operands)>,
       OpBuilder<(ins "std::string":$funcNameStr, "mlir::ValueRange":$results, "mlir::Operation *":$op, "mlir::ValueRange":$operands, "std::vector<std::string>":$attributeNames)>,
     OpBuilder<(ins "mlir::ValueRange":$results, "mlir::Operation *":$op, "mlir::ValueRange":$operands, "bool":$copyAttrs)>,
       OpBuilder<(ins "std::string":$funcNameStr, "mlir::ValueRange":$results, "mlir::Operation *":$op, "mlir::ValueRange":$operands, "std::vector<std::string>":$attributeNames)>,
@@ -514,7 +523,7 @@ def KrnlUnrollOp : Op<Krnl_Dialect, "unroll"> {
   }];
 }
 
-def KrnlParallelOp : Op<Krnl_Dialect, "parallel"> {
+def KrnlParallelOp : Op<Krnl_Dialect, "parallel", [AttrSizedOperandSegments]> {
   let summary = "Mark Krnl loops as parallel loops";
   let description = [{
     Parallelize the specified loops. When multiple loop specifiers are passed
@@ -522,19 +531,54 @@ def KrnlParallelOp : Op<Krnl_Dialect, "parallel"> {
     krnl.parallel should be placed as the last operator before krnl.iterate,
     Since we do not want to parallelize the loop until we interpret krnl.block,
     krnl.permute and krnl.unroll.
+
+    Optionally, a value may specifiy the number of threads requested for the
+    parallel loop. A proc_bind string may also be specified; valid values are
+    "primary", "close", or "spread". Default values are used when not specified.
+
     ```
     krnl.parallel (%i0, %i1) : !Krnl.loop, !Krnl.loop
     ```
   }];
 
-  let arguments = (ins Variadic<AnyType>:$loops);
+  let arguments = (ins Variadic<AnyType>:$loops,
+    Optional<I32>:$num_threads,
+    OptionalAttr<StrAttr>:$proc_bind);
 
   let assemblyFormat = [{
-      `(` $loops `)` attr-dict `:` type($loops)
+      `(` $loops `)` (`,` `num_threads` `(` $num_threads^ `)`)? attr-dict `:` type($loops) 
   }];
 }
 
-def KrnlErfOp : Op<Krnl_Dialect, "erf"> {
+def KrnlParallelClauseOp : Op<Krnl_Dialect, "parallel_clause"> {
+  let summary = "Attach OpenMP clauses to an index varialbe";
+  let description = [{
+    Attach OpenMP clauses to an index variable. That index variable
+    is used to uniquely associate a parallel loop with its clauses.
+  }];
+
+  let arguments = (ins Index: $parallel_loop_index, 
+    Optional<I32>:$num_threads,
+    OptionalAttr<StrAttr>:$proc_bind);
+
+  let assemblyFormat = [{
+      `(` $parallel_loop_index `)` (`,` `num_threads` `(` $num_threads^ `)`)? 
+      attr-dict `:` type($parallel_loop_index) 
+  }];
+}
+
+def KrnlRoundEvenOp : Op<Krnl_Dialect, "round_even", [Pure]> {
+  let summary = "Krnl round to nearest even operation";
+  let description = [{
+    Krnl round to nearest even operation.  Accept scalar or vector float values.
+    Vector must be 1D of a size that is a multiple of the hardware vector size.
+  }];
+
+  let arguments = (ins FloatLike:$in);
+  let results = (outs FloatLike:$out);
+}
+
+def KrnlErfOp : Op<Krnl_Dialect, "erf", [Pure]> {
   let summary = "Krnl erf scalar operation";
   let description = [{
     Krnl erf scalar operation.
@@ -544,7 +588,7 @@ def KrnlErfOp : Op<Krnl_Dialect, "erf"> {
   let results = (outs AnyFloat:$out);
 }
 
-def KrnlIsInfOp : Op<Krnl_Dialect, "isinf"> {
+def KrnlIsInfOp : Op<Krnl_Dialect, "isinf", [Pure]> {
   let summary = "Krnl isinf scalar operation";
   let description = [{
     Krnl isinf scalar operation.
@@ -554,7 +598,7 @@ def KrnlIsInfOp : Op<Krnl_Dialect, "isinf"> {
   let results = (outs I1:$out);
 }
 
-def KrnlIsNaNOp : Op<Krnl_Dialect, "isnan"> {
+def KrnlIsNaNOp : Op<Krnl_Dialect, "isnan", [Pure]> {
   let summary = "Krnl isnan scalar operation";
   let description = [{
     Krnl isnan scalar operation.
@@ -564,7 +608,7 @@ def KrnlIsNaNOp : Op<Krnl_Dialect, "isnan"> {
   let results = (outs I1:$out);
 }
 
-def KrnlAcosOp : Op<Krnl_Dialect, "acos"> {
+def KrnlAcosOp : Op<Krnl_Dialect, "acos", [Pure]> {
   let summary = "Krnl acos scalar operation";
   let description = [{
     Krnl acos scalar operation.
@@ -574,7 +618,7 @@ def KrnlAcosOp : Op<Krnl_Dialect, "acos"> {
   let results = (outs AnyFloat:$out);
 }
 
-def KrnlAcoshOp : Op<Krnl_Dialect, "acosh"> {
+def KrnlAcoshOp : Op<Krnl_Dialect, "acosh", [Pure]> {
   let summary = "Krnl acosh scalar operation";
   let description = [{
     Krnl acosh scalar operation.
@@ -584,7 +628,7 @@ def KrnlAcoshOp : Op<Krnl_Dialect, "acosh"> {
   let results = (outs AnyFloat:$out);
 }
 
-def KrnlAsinOp : Op<Krnl_Dialect, "asin"> {
+def KrnlAsinOp : Op<Krnl_Dialect, "asin", [Pure]> {
   let summary = "Krnl asin scalar operation";
   let description = [{
     Krnl asin scalar operation.
@@ -594,7 +638,7 @@ def KrnlAsinOp : Op<Krnl_Dialect, "asin"> {
   let results = (outs AnyFloat:$out);
 }
 
-def KrnlAsinhOp : Op<Krnl_Dialect, "asinh"> {
+def KrnlAsinhOp : Op<Krnl_Dialect, "asinh", [Pure]> {
   let summary = "Krnl asinh scalar operation";
   let description = [{
     Krnl asinh scalar operation.
@@ -604,7 +648,7 @@ def KrnlAsinhOp : Op<Krnl_Dialect, "asinh"> {
   let results = (outs AnyFloat:$out);
 }
 
-def KrnlAtanOp : Op<Krnl_Dialect, "atan"> {
+def KrnlAtanOp : Op<Krnl_Dialect, "atan", [Pure]> {
   let summary = "Krnl atan scalar operation";
   let description = [{
     Krnl atan scalar operation.
@@ -614,7 +658,7 @@ def KrnlAtanOp : Op<Krnl_Dialect, "atan"> {
   let results = (outs AnyFloat:$out);
 }
 
-def KrnlAtanhOp : Op<Krnl_Dialect, "atanh"> {
+def KrnlAtanhOp : Op<Krnl_Dialect, "atanh", [Pure]> {
   let summary = "Krnl atanh scalar operation";
   let description = [{
     Krnl atanh scalar operation.
@@ -624,7 +668,7 @@ def KrnlAtanhOp : Op<Krnl_Dialect, "atanh"> {
   let results = (outs AnyFloat:$out);
 }
 
-def KrnlTanOp : Op<Krnl_Dialect, "tan"> {
+def KrnlTanOp : Op<Krnl_Dialect, "tan", [Pure]> {
   let summary = "Krnl tan scalar operation";
   let description = [{
     Krnl tan scalar operation.
@@ -638,7 +682,7 @@ def KrnlTanOp : Op<Krnl_Dialect, "tan"> {
 def KrnlLoadOp : Op<Krnl_Dialect, "load",
   [TypesMatchWith<"result type matches element type of 'memref'",
                   "memref", "result",
-                  "$_self.cast<MemRefType>().getElementType()">,
+                  "mlir::cast<MemRefType>($_self).getElementType()">,
                   MemRefsNormalizable]> {
   let summary = "A Krnl operation to load data from the memref.";
 
@@ -657,7 +701,7 @@ def KrnlLoadOp : Op<Krnl_Dialect, "load",
 
   let builders = [
     OpBuilder<(ins "Value":$memref, CArg<"ValueRange", "{}">:$indices), [{
-      auto memrefType = memref.getType().cast<MemRefType>();
+      auto memrefType = mlir::cast<MemRefType>(memref.getType());
       $_state.addOperands(memref);
       $_state.addOperands(indices);
       $_state.types.push_back(memrefType.getElementType());
@@ -668,7 +712,7 @@ def KrnlLoadOp : Op<Krnl_Dialect, "load",
   let extraClassDeclaration = [{
     void setMemRef(Value value) { setOperand(0, value); }
     MemRefType getMemRefType() {
-      return getMemref().getType().cast<MemRefType>();
+      return mlir::cast<MemRefType>(getMemref().getType());
     }
   }];
 }
@@ -676,7 +720,7 @@ def KrnlLoadOp : Op<Krnl_Dialect, "load",
 def KrnlStoreOp : Op<Krnl_Dialect, "store",
      [TypesMatchWith<"type of 'value' matches element type of 'memref'",
                      "memref", "value",
-                     "$_self.cast<MemRefType>().getElementType()">,
+                     "mlir::cast<MemRefType>($_self).getElementType()">,
                      MemRefsNormalizable]> {
   let summary = "A Krnl operation to store data to the memref.";
   let description = [{
@@ -704,7 +748,7 @@ def KrnlStoreOp : Op<Krnl_Dialect, "store",
   let extraClassDeclaration = [{
       void setMemRef(Value value) { setOperand(1, value); }
       MemRefType getMemRefType() {
-        return getMemref().getType().cast<MemRefType>();
+        return mlir::cast<MemRefType>(getMemref().getType());
       }
   }];
 }
@@ -741,7 +785,7 @@ def KrnlGetLinearOffsetIndexOp : Op<Krnl_Dialect, "get_linear_offset_index",
     void setMemRef(Value value) { setOperand(getMemRefOperandIndex(), value); }
 
     MemRefType getMemRefType() {
-      return getMemref().getType().cast<MemRefType>();
+      return mlir::cast<MemRefType>(getMemref().getType());
     }
 
     /// Returns the affine map used to index the memref for this operation.
@@ -792,7 +836,7 @@ def KrnlPrefetchOp : Op<Krnl_Dialect, "prefetch",
     Value getMemRef() { return getOperand(getMemRefOperandIndex()); }
     void setMemRef(Value value) { setOperand(getMemRefOperandIndex(), value); }
     MemRefType getMemRefType() {
-      return getMemref().getType().cast<MemRefType>();
+      return mlir::cast<MemRefType>(getMemref().getType());
     }
 
     /// Implements the AffineMapAccessInterface.
@@ -1154,10 +1198,10 @@ def KrnlMatMulOp : Op<Krnl_Dialect, "matmul", [AttrSizedOperandSegments,
 def KrnlCopyToBufferOp : Op<Krnl_Dialect, "copy_to_tile_buffer", [
     TypesMatchWith<"type of 'padValue' matches element type of 'source'",
                   "source", "padValue",
-                  "$_self.cast<MemRefType>().getElementType()">,
+                  "mlir::cast<MemRefType>($_self).getElementType()">,
     TypesMatchWith<"type of 'padValue' matches element type of 'buffer'",
                   "buffer", "padValue",
-                   "$_self.cast<MemRefType>().getElementType()">,
+                   "mlir::cast<MemRefType>($_self).getElementType()">,
     MemRefsNormalizable]> {
   let summary = "Copy to buffer.";
   let description = [{
@@ -1261,7 +1305,8 @@ def KrnlCopyFromBufferOp : Op<Krnl_Dialect, "copy_from_tile_buffer",
 }
 
 def KrnlInstrumentOp : Op<Krnl_Dialect, "runtime_instrument",
-    []> {
+    [DeclareOpInterfaceMethods<MemoryEffectsOpInterface>]
+  > {
   let summary = "instrumentation point.";
   let description = [{
     Operation that invokes the runtime instrument utility.
@@ -1279,7 +1324,7 @@ def KrnlMemsetOp : Op<Krnl_Dialect, "memset", [MemRefsNormalizable,
     DeclareOpInterfaceMethods<MemoryEffectsOpInterface>,
     TypesMatchWith<"type of 'value' matches element type of 'dest'",
                    "dest", "value",
-                   "$_self.cast<MemRefType>().getElementType()">]> {
+                   "mlir::cast<MemRefType>($_self).getElementType()">]> {
   let summary = "Set buffer to a given value.";
   let description = [{
     Krnl operation that sets a buffer to a given value.
@@ -1337,7 +1382,7 @@ def KrnlRandomNormalOp : Op<Krnl_Dialect, "random_normal",
     Operation that generates a random normally distributed tensor.
   }];
 
-  let arguments = (ins AnyTypeOf<[AnyMemRef]>:$output,
+  let arguments = (ins Arg<AnyTypeOf<[AnyMemRef]>, "output of the random tensor", [MemWrite]>:$output,
     Index:$numberOfValues,
     AnyFloat:$mean,
     AnyFloat:$scale,
@@ -1378,7 +1423,7 @@ def KrnlNoneOp : Op<Krnl_Dialect, "noValue"> {
     }]>];
 }
 
-def KrnlPrintTensorOp : Op<Krnl_Dialect, "print_tensor", [MemRefsNormalizable]> {
+def KrnlPrintTensorOp : Op<Krnl_Dialect, "print_tensor", [MemRefsNormalizable, DeclareOpInterfaceMethods<MemoryEffectsOpInterface>]> {
   let summary = "Print a tensor.";
   let description = [{
     This operation can be used to generate a call to a runtime function which prints a tensor.
@@ -1395,7 +1440,7 @@ def KrnlPrintTensorOp : Op<Krnl_Dialect, "print_tensor", [MemRefsNormalizable]> 
   let arguments = (ins StrAttr:$msg, AnyMemRef:$input);
 }
 
-def KrnlPrintOp : Op<Krnl_Dialect, "print", [MemRefsNormalizable]> {
+def KrnlPrintOp : Op<Krnl_Dialect, "print", [MemRefsNormalizable, DeclareOpInterfaceMethods<MemoryEffectsOpInterface>]> {
   let summary = "Print a value.";
   let description = [{
     This operation can be used to print the input value. The user needs to provide a

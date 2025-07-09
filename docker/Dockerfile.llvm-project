@@ -1,5 +1,5 @@
 # By default, use ubuntu:jammy, remember to change Jenkins build script as well
-ARG BASE_IMAGE="ubuntu:jammy"
+ARG BASE_IMAGE="ghcr.io/onnxmlir/ubuntu:jammy"
 FROM ${BASE_IMAGE}
 
 # Label the image for various checking and cleanup
@@ -47,11 +47,15 @@ RUN distro=$(cat /etc/os-release|grep -Po '(?<=^ID=").*(?=")|(?<=^ID=)[^"].*[^"]
               autoconf automake ca-certificates clang cmake diffutils \
               file java-11-openjdk-devel java-11-openjdk-headless \
               gcc gcc-c++ git libtool make ncurses-devel ninja-build \
-              python39 python39-devel python39-numpy python39-pip \
-              python39-setuptools python39-wheel tzdata-java zlib-devel && \
+              python39 python39-devel python39-pip python39-setuptools \
+              python39-wheel tzdata-java zlib-devel && \
+	  # Workaround broken ubi8 amd64 image installing python3.12 as
+	  # dependency of clang, which also breaks the /usr/bin/pip3
+	  # symlink creation
+	  ([ -f /usr/bin/python3.12 ] && yum remove -y python3.12 || true) && \
           # Use same versions as those in ubuntu:jammy
           pip3 install -q \
-               Cython pytest==6.2.5 pytest-forked==1.4.0 \
+               Cython pytest==6.2.5 numpy==1.21.5 pytest-forked==1.4.0 \
                pytest-xdist==2.5.0 typing-extensions==3.10.0.2 && \
           rm -rf /var/cache/dnf/* && \
           echo -e "/usr/local/lib" > /etc/ld.so.conf.d/local.conf; \

@@ -1,3 +1,17 @@
+/*
+ * SPDX-License-Identifier: Apache-2.0
+ */
+
+//===-- OMSort.inc - OMSort C/C++ Implementation --===//
+//
+// Copyright 2023-2024 The IBM Research Authors.
+//
+// =============================================================================
+//
+// This file contains C/C++ implementation of OMSort.
+//
+//===----------------------------------------------------------------------===//
+
 #ifdef __cplusplus
 #include <cassert>
 #else
@@ -40,9 +54,9 @@
 //
 #define compareFunctionBody(typeName, direction, load, dataPtr, idx1p, idx2p)  \
   {                                                                            \
-    uint64_t idx1 = *((uint64_t *)idx1p);                                      \
-    uint64_t idx2 = *((uint64_t *)idx2p);                                      \
-    typeName *data = (typeName *)dataPtr;                                      \
+    uint64_t idx1 = *((uint64_t *)(idx1p));                                    \
+    uint64_t idx2 = *((uint64_t *)(idx2p));                                    \
+    typeName *data = (typeName *)(dataPtr);                                    \
     load(typeName, v1, data[idx1]);                                            \
     load(typeName, v2, data[idx2]);                                            \
     return (direction(v1, v2) || (v1 == v2 && idx1 < idx2)) ? -1 : 1;          \
@@ -83,7 +97,7 @@ typedef int(
 //       Or consider converting the whole tensor to f32, sort as f32, and then
 //       convert the sorted tensor back to f16. That may be faster than
 //       converting elements for each comparison during sorting.
-#define LoadF16AsF32(typeName, to, from) float to = om_f16_to_f32(from)
+#define LoadF16AsF32(typeName, to, from) float (to) = om_f16_to_f32(from)
 
 // declare ascending functions
 #define Ascending(lhs, rhs) ((lhs) < (rhs))
@@ -155,43 +169,43 @@ typedef struct indexStack {
 
 #define STACK_INIT(stack, stackSize)                                           \
   do {                                                                         \
-    assert(stackSize > 0);                                                     \
-    stack.stackData = (uint64_t *)alloca(stackSize * sizeof(uint64_t));        \
-    assert(stack.stackData != NULL);                                           \
-    stack.stackSize = stackSize;                                               \
-    stack.stackTop = 0;                                                        \
+    assert((stackSize) > 0);                                                   \
+    (stack).stackData = (uint64_t *)alloca((stackSize) * sizeof(uint64_t));    \
+    assert((stack).stackData != NULL);                                         \
+    (stack).stackSize = (stackSize);                                           \
+    (stack).stackTop = 0;                                                      \
   } while (0)
-#define STACK_ISEMPTY(stack) (stack.stackTop == 0)
+#define STACK_ISEMPTY(stack) ((stack).stackTop == 0)
 #define STACK_PUSH(stack, begin, end)                                          \
   do {                                                                         \
-    assert(stack.stackTop <= stack.stackSize - 2);                             \
-    stack.stackData[(stack.stackTop)++] = begin;                               \
-    stack.stackData[(stack.stackTop)++] = end;                                 \
+    assert((stack).stackTop <= (stack).stackSize - 2);                         \
+    (stack).stackData[((stack).stackTop)++] = (begin);                         \
+    (stack).stackData[((stack).stackTop)++] = (end);                           \
   } while (0)
 #define STACK_POP(stack, begin, end)                                           \
   do {                                                                         \
-    assert(stack.stackTop >= 2);                                               \
-    end = stack.stackData[--(stack.stackTop)];                                 \
-    begin = stack.stackData[--(stack.stackTop)];                               \
+    assert((stack).stackTop >= 2);                                             \
+    (end) = (stack).stackData[--((stack).stackTop)];                           \
+    (begin) = (stack).stackData[--((stack).stackTop)];                         \
   } while (0)
 #define STACK_PRINT(stack)                                                     \
   do {                                                                         \
-    assert(stack.stackTop >= 0);                                               \
+    assert((stack).stackTop >= 0);                                             \
     fprintf(stderr, "Stack: [");                                               \
-    for (int64_t i = 0; (i + 1) < stack.stackTop; i += 2) {                    \
+    for (int64_t i = 0; (i + 1) < (stack).stackTop; i += 2) {                  \
       fprintf(                                                                 \
-          stderr, "<%ld:%ld>, ", stack.stackData[i], stack.stackData[i + 1]);  \
+          stderr, "<%ld:%ld>, ", (stack).stackData[i], (stack).stackData[i + 1]);\
     }                                                                          \
     fprintf(                                                                   \
-        stderr, "] (Top=%ld,Size=%ld)\n", stack.stackTop, stack.stackSize);    \
+        stderr, "] (Top=%ld,Size=%ld)\n", (stack).stackTop, (stack).stackSize);\
     fflush(stderr);                                                            \
   } while (0)
 
 static int64_t log2u(uint64_t n) {
   assert(n > 0);
   int64_t b = 0;
-  for (; n > 0; b++)
-    n = n >> 2;
+  for (; n > 1; b++)
+    n = n >> 1;
   return b;
 }
 

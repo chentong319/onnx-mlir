@@ -24,6 +24,7 @@
 #include "llvm/ADT/SmallPtrSet.h"
 #include "llvm/Support/raw_ostream.h"
 
+#include "src/Conversion/ONNXToKrnl/ONNXToKrnlCommon.hpp"
 #include "src/Dialect/ONNX/ONNXOps.hpp"
 #include "src/Dialect/ONNX/ONNXOps/OpHelper.hpp"
 #include "src/Interface/ShapeInferenceOpInterface.hpp"
@@ -48,9 +49,18 @@ public:
   InstrumentONNXSignaturePass() = default;
   InstrumentONNXSignaturePass(const InstrumentONNXSignaturePass &pass)
       : mlir::PassWrapper<InstrumentONNXSignaturePass,
-            OperationPass<func::FuncOp>>() {}
+            OperationPass<func::FuncOp>>() {
+    signaturePattern = pass.signaturePattern;
+    nodeNamePattern = pass.nodeNamePattern;
+  }
+  InstrumentONNXSignaturePass(
+      const std::string opPattern, const std::string nodePattern)
+      : signaturePattern(opPattern), nodeNamePattern(nodePattern) {}
 
 private:
+  std::string signaturePattern;
+  std::string nodeNamePattern;
+
 public:
   StringRef getArgument() const override {
     return "instrument-onnx-runtime-signature";
@@ -62,11 +72,24 @@ public:
   }
 
   void runOnOperation() override {
+    onnx_mlir::EnableByRegexOption traceSpecificOpPattern(
+
+        /*emptyIsNone*/ false);
+    onnx_mlir::EnableByRegexOption traceSpecificNodePattern(
+        /*emptyIsNone*/ false);
+
+    traceSpecificOpPattern.setRegexString(signaturePattern);
+    traceSpecificNodePattern.setRegexString(nodeNamePattern);
     // Iterate on the operations nested in this function.
     getOperation().walk([&](mlir::Operation *op) {
-      if (isa<ONNXDialect>(op->getDialect())) {
-        if (!isa<ONNXPrintSignatureOp>(op)) {
-          Location loc = op->getLoc();
+      auto dialect = op->getDialect();
+      Location loc = op->getLoc();
+      // Define a lambda function to check whether the node is selected by
+      // its op name or node name, and if yes, insert ONNXSignatureOp
+      auto checkAndInsert = [&](onnx_mlir::EnableByRegexOption &pattern,
+                                std::string matchString, int detail) -> bool {
+        if (pattern.isEnabled(matchString)) {
+          // Add signature printing op.
           OpBuilder builder(op);
           std::string opName = op->getName().getStringRef().str();
           std::string nodeName = onnx_mlir::getNodeNameInPresenceOfOpt(op);
@@ -79,17 +102,45 @@ public:
           // Since we may use the result of an operation, we must insert the
           // print operation after the operation.
           builder.setInsertionPointAfter(op);
-          builder.create<ONNXPrintSignatureOp>(loc, fullNameAttr, operAndRes);
+          // When one node is selected, print the details of the tensor.
+          builder.create<ONNXPrintSignatureOp>(
+              loc, fullNameAttr, detail, operAndRes);
+          return true;
+        }
+        return false;
+      };
+      if (isa<func::FuncDialect>(dialect) ||
+          isa<ONNXPrintSignatureOp, KrnlInstrumentOp>(op)) {
+        // Always skip function dialects (such as function call/return), as well
+        // as ONNX instrument operations.
+      } else {
+        // If has both a print of data and print of signature, favor the
+        // printing of data as it also will print the signature.
+        bool gotOne = false;
+        if (nodeNamePattern != "NONE" && nodeNamePattern != "") {
+          StringAttr onnxNodeName =
+              op->getAttrOfType<mlir::StringAttr>("onnx_node_name");
+          if (onnxNodeName && !onnxNodeName.getValue().empty()) {
+            std::string nodeNameString = onnxNodeName.getValue().str();
+            gotOne =
+                checkAndInsert(traceSpecificNodePattern, nodeNameString, 1);
+          }
+        }
+        if (!gotOne && signaturePattern != "NONE" && signaturePattern != "") {
+          std::string opName = op->getName().getStringRef().str();
+          checkAndInsert(traceSpecificOpPattern, opName, 0);
         }
       }
     });
   }
 };
+
 } // end anonymous namespace
 
 /*!
  * Create an instrumentation pass.
  */
-std::unique_ptr<mlir::Pass> onnx_mlir::createInstrumentONNXSignaturePass() {
-  return std::make_unique<InstrumentONNXSignaturePass>();
+std::unique_ptr<mlir::Pass> onnx_mlir::createInstrumentONNXSignaturePass(
+    const std::string pattern, const std::string nodePattern) {
+  return std::make_unique<InstrumentONNXSignaturePass>(pattern, nodePattern);
 }

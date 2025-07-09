@@ -4,7 +4,7 @@
 
 //====----- ONNXToKrnlCommon.cpp - ONNX dialects to Krnl lowering ---------===//
 //
-// Copyright 2019-2023 The IBM Research Authors.
+// Copyright 2019-2024 The IBM Research Authors.
 //
 // =============================================================================
 //
@@ -14,10 +14,12 @@
 //===----------------------------------------------------------------------===//
 
 #include "src/Conversion/ONNXToKrnl/ONNXToKrnlCommon.hpp"
+#include "mlir/Dialect/SCF/IR/SCF.h"
 #include "mlir/Dialect/Utils/ReshapeOpsUtils.h"
 #include "mlir/IR/BuiltinTypeInterfaces.h"
 
 #include "src/Accelerators/Accelerator.hpp"
+#include "src/Compiler/CompilerOptions.hpp"
 #include "src/Dialect/Krnl/DialectBuilder.hpp"
 #include "src/Dialect/Mlir/DialectBuilder.hpp"
 #include "src/Dialect/ONNX/ONNXOps/OpHelper.hpp"
@@ -33,7 +35,7 @@ Value OnnxToKrnlBuilder::reshape(
     const Value input, const ArrayRef<DimIndexExpr> shapeDims) const {
   assert(!shapeDims.empty() && "Shape dimensions should not be empty");
 
-  ShapedType inputType = input.getType().cast<ShapedType>();
+  ShapedType inputType = mlir::cast<ShapedType>(input.getType());
   Type elementType = inputType.getElementType();
   MultiDialectBuilder<OnnxBuilder, MemRefBuilder, KrnlBuilder, MathBuilder>
       create(b(), loc());
@@ -101,7 +103,7 @@ Value OnnxToKrnlBuilder::transpose(const Value input,
     shape.push_back(dim.isLiteral() ? dim.getLiteral() : ShapedType::kDynamic);
 
   // Create the "onnx.Transpose" operation.
-  ShapedType inputType = input.getType().cast<ShapedType>();
+  ShapedType inputType = mlir::cast<ShapedType>(input.getType());
   Value transposeRes =
       create.onnx.transpose(MemRefType::get(shape, inputType.getElementType()),
           input, b().getI64ArrayAttr(perm));
@@ -110,9 +112,10 @@ Value OnnxToKrnlBuilder::transpose(const Value input,
 }
 
 bool isScalarValue(Value value) {
-  ShapedType stype = value.getType().dyn_cast<ShapedType>();
+  ShapedType stype = mlir::dyn_cast<ShapedType>(value.getType());
   assert(stype && "expected shaped type");
-  return stype.getRank() == 0;
+  return (stype.getRank() == 0) ||
+         (stype.getRank() == 1 && stype.getShape()[0] == 1);
 }
 
 /// Check if all operands are scalar values at compile time.
@@ -131,24 +134,10 @@ bool hasAllScalarValues(ValueRange values) {
 bool hasOneElement(Value value) {
   if (isScalarValue(value))
     return true;
-  ShapedType type = value.getType().dyn_cast<ShapedType>();
+  ShapedType type = mlir::dyn_cast<ShapedType>(value.getType());
   assert(type && "expected shaped type");
   for (int64_t s : type.getShape())
     if (s != 1)
-      return false;
-  return true;
-}
-
-// Same as above, but from the innermost dimensions up to innerDim.
-bool hasOneElementInInnermostDims(Value value, int64_t innerDim) {
-  if (isScalarValue(value))
-    return true;
-  ShapedType type = value.getType().dyn_cast<ShapedType>();
-  assert(type && "expected shaped type");
-  mlir::ArrayRef<int64_t> shape = type.getShape();
-  int64_t rank = type.getRank();
-  for (int64_t i = rank - innerDim; i < rank; ++i)
-    if (shape[i] != 1)
       return false;
   return true;
 }
@@ -158,7 +147,8 @@ bool hasOneElementInInnermostDims(Value value, int64_t innerDim) {
 bool indicesAreNonNegativeConstants(Value indices) {
   DenseElementsAttr valueAttribute =
       krnl::getDenseElementAttributeFromKrnlValue(indices);
-  if (!valueAttribute || !valueAttribute.getElementType().isa<IntegerType>())
+  if (!valueAttribute ||
+      !mlir::isa<IntegerType>(valueAttribute.getElementType()))
     return false;
 
   return llvm::all_of(valueAttribute.getValues<IntegerAttr>(),
@@ -208,7 +198,7 @@ std::map<int64_t, int64_t> getReductionMapping(
 // Dynamic dimension are supported.
 void addDimensionToPack(ConversionPatternRewriter &rewriter, Location loc,
     krnl::KrnlIterateOperandPack &pack, Value operand, int index) {
-  auto shape = operand.getType().cast<MemRefType>().getShape();
+  auto shape = mlir::cast<MemRefType>(operand.getType()).getShape();
   assert(shape[index] != -1 && "expected kDynamic, not -1");
   if (shape[index] == ShapedType::kDynamic) {
     MultiDialectBuilder<MemRefBuilder> create(rewriter, loc);
@@ -233,7 +223,8 @@ void defineLoops(ConversionPatternRewriter &rewriter, Location loc,
 Value getDimOrConstant(ConversionPatternRewriter &rewriter, Location loc,
     Value operand, int64_t axis, Type type) {
   MultiDialectBuilder<MathBuilder, MemRefBuilder> create(rewriter, loc);
-  ArrayRef<int64_t> shape = operand.getType().cast<ShapedType>().getShape();
+  ArrayRef<int64_t> shape =
+      mlir::cast<ShapedType>(operand.getType()).getShape();
   assert(shape[axis] != -1 && "expected kDynamic, not -1");
   return (shape[axis] == ShapedType::kDynamic)
              ? create.math.cast(type, create.mem.dim(operand, axis))
@@ -266,7 +257,7 @@ namespace {
 // Returns the DenseElementsAttr of input if it's a krnl.global constant or
 // onnx.Constant, or if it's one step removed from a krnl/onnx constant by a
 // builtin.unrealized_conversion_cast. Otherwise returns a nullptr attribute.
-DenseElementsAttr getDenseElementAttrFromConstValue(mlir::Value value) {
+DenseElementsAttr getDenseElementAttrFromConstValue(Value value) {
   Operation *definingOp = value.getDefiningOp();
   if (auto castOp = dyn_cast_or_null<UnrealizedConversionCastOp>(definingOp)) {
     if (castOp.getNumOperands() != 1)
@@ -275,10 +266,10 @@ DenseElementsAttr getDenseElementAttrFromConstValue(mlir::Value value) {
   }
   if (auto globalOp = dyn_cast_or_null<KrnlGlobalOp>(definingOp)) {
     if (globalOp.getValue().has_value())
-      return globalOp.getValueAttr().dyn_cast<DenseElementsAttr>();
+      return mlir::dyn_cast<DenseElementsAttr>(globalOp.getValueAttr());
   } else if (auto constOp = dyn_cast_or_null<ONNXConstantOp>(definingOp)) {
     if (constOp.getValue().has_value())
-      return constOp.getValueAttr().dyn_cast<DenseElementsAttr>();
+      return mlir::dyn_cast<DenseElementsAttr>(constOp.getValueAttr());
   }
   return nullptr;
 }
@@ -329,8 +320,7 @@ Value foldOrEmitONNXTransposeOpKrnl(ConversionPatternRewriter &rewriter,
 /// Emit MemRef ReinterpretCastOp to create a new view for 'data'.
 /// The new view is created using the given 'outputDims'.
 Value emitMemRefReinterpretCastOp(ConversionPatternRewriter &rewriter,
-    Location loc, Value data, SmallVectorImpl<IndexExpr> &outputDims,
-    Type outputType) {
+    Location loc, Value data, DimsExpr &outputDims, Type outputType) {
   MemRefBuilder createMemRef(rewriter, loc);
   Value newView = createMemRef.reinterpretCast(data, outputDims);
   // Set type to the output type to avoid unrealized_conversion_cast.
@@ -351,7 +341,7 @@ Value emitArgSort(ConversionPatternRewriter &rewriter, Location loc,
       create(rewriter, loc);
   IndexExprScope scope(create.krnl);
 
-  MemRefType inputMemRefType = input.getType().cast<MemRefType>();
+  MemRefType inputMemRefType = mlir::cast<MemRefType>(input.getType());
   Type indexType = rewriter.getIndexType();
   int64_t rank = inputMemRefType.getRank();
   assert(axis >= 0 && axis < rank && "axis is out of bound");
@@ -366,7 +356,7 @@ Value emitArgSort(ConversionPatternRewriter &rewriter, Location loc,
   Value order = create.mem.alignedAlloc(type, ubs);
   ValueRange initLoopDef = create.krnl.defineLoops(rank);
   create.krnl.iterateIE(initLoopDef, initLoopDef, lbs, ubs,
-      [&](KrnlBuilder &createKrnl, ValueRange loopInd) {
+      [&](const KrnlBuilder &createKrnl, ValueRange loopInd) {
         // order[axis_0, axis_1, ..., axis_k-1, k, axis_k+1, ....] = k
         createKrnl.store(loopInd[axis], order, loopInd);
       });
@@ -376,7 +366,8 @@ Value emitArgSort(ConversionPatternRewriter &rewriter, Location loc,
     // Emit krnl.Call to call omTensorSort API
     Type intType = rewriter.getIntegerType(64);
     Value valAxis = create.math.constant(intType, axis);
-    Value valAscending = create.math.constant(intType, (int64_t)ascending);
+    Value valAscending =
+        create.math.constant(intType, static_cast<int64_t>(ascending));
     SmallVector<Value, 4> operands = {order, input, valAxis, valAscending};
     rewriter.create<KrnlCallOp>(loc, "omTensorSort", 1, operands);
     return order;
@@ -387,11 +378,10 @@ Value emitArgSort(ConversionPatternRewriter &rewriter, Location loc,
   outerUbs[axis] = ubs[axis] - oneIE;
   ValueRange loopDef = create.krnl.defineLoops(rank);
   create.krnl.iterateIE(loopDef, loopDef, lbs, outerUbs,
-      [&](KrnlBuilder &createKrnl, ValueRange iLoopInd) {
-        IndexExpr i1 = DimIndexExpr(iLoopInd[axis]) + oneIE;
-        ValueRange swapLoopDef = createKrnl.defineLoops(1);
-        createKrnl.iterateIE(swapLoopDef, swapLoopDef, {i1}, {ubs[axis]},
-            [&](KrnlBuilder &ck, ValueRange swapLoopInd) {
+      [&](const KrnlBuilder &createKrnl, ValueRange iLoopInd) {
+        IndexExpr i1 = DimIE(iLoopInd[axis]) + oneIE;
+        createKrnl.forLoopIE(i1, ubs[axis], /*step*/ 1, /*parallel*/ false,
+            [&](const KrnlBuilder &ck, ValueRange swapLoopInd) {
               MultiDialectBuilder<KrnlBuilder, MathBuilder, SCFBuilder> create(
                   ck);
               SmallVector<Value> kLoopInd(iLoopInd);
@@ -413,7 +403,7 @@ Value emitArgSort(ConversionPatternRewriter &rewriter, Location loc,
                 cond = create.math.sgt(x, y);
               else
                 cond = create.math.slt(x, y);
-              create.scf.ifThenElse(cond, [&](SCFBuilder &createSCF) {
+              create.scf.ifThenElse(cond, [&](const SCFBuilder &createSCF) {
                 KrnlBuilder createKrnl(createSCF);
                 createKrnl.store(kOrd, order, iLoopInd);
                 createKrnl.store(iOrd, order, kLoopInd);
@@ -430,10 +420,10 @@ Value emitArgSort(ConversionPatternRewriter &rewriter, Location loc,
 Value getOptionalScalarValue(ConversionPatternRewriter &rewriter, Location loc,
     Value optionalScalar, Type elementType, double defaultValue) {
   MultiDialectBuilder<KrnlBuilder, MathBuilder> create(rewriter, loc);
-  if (optionalScalar.getType().isa<NoneType>()) {
+  if (mlir::isa<NoneType>(optionalScalar.getType())) {
     return create.math.constant(elementType, defaultValue);
-  } else if (optionalScalar.getType().cast<ShapedType>().getRank() == 0) {
-    return create.krnl.load(optionalScalar, {});
+  } else if (mlir::cast<ShapedType>(optionalScalar.getType()).getRank() == 0) {
+    return create.krnl.load(optionalScalar);
   } else {
     Value zero = create.math.constantIndex(0);
     return create.krnl.load(optionalScalar, {zero});
@@ -446,7 +436,7 @@ Value getOptionalScalarValue(ConversionPatternRewriter &rewriter, Location loc,
 
 MemRefType convertTypeWithCustomONNXDataLayoutToMemRef(Type type) {
   // Get tensor rank, shape, and element type.
-  RankedTensorType tensorType = type.dyn_cast<RankedTensorType>();
+  RankedTensorType tensorType = mlir::dyn_cast<RankedTensorType>(type);
   assert(tensorType && "expected only ranked shapes");
   ArrayRef<int64_t> shape = tensorType.getShape();
   int64_t rank = shape.size();
@@ -526,7 +516,7 @@ KrnlTypeConverter::KrnlTypeConverter() {
 
   addConversion([](TensorType tensorType) {
     assert(tensorType.hasRank() && "expected only ranked shapes");
-    if (tensorType.getElementType().isa<ONNXStringType>()) {
+    if (mlir::isa<ONNXStringType>(tensorType.getElementType())) {
       Type elementType = krnl::StringType::get(tensorType.getContext());
       return MemRefType::get(tensorType.getShape(), elementType);
     }
@@ -543,7 +533,7 @@ KrnlTypeConverter::KrnlTypeConverter() {
   });
 
   addConversion([](SeqType seqType) {
-    auto seqElementType = seqType.getElementType().cast<ShapedType>();
+    auto seqElementType = mlir::cast<ShapedType>(seqType.getElementType());
     Type elementType = seqElementType.getElementType();
     Type seqElementConvertedType;
     if (seqElementType.hasRank()) {
@@ -559,20 +549,18 @@ KrnlTypeConverter::KrnlTypeConverter() {
   });
 
   addSourceMaterialization([&](OpBuilder &builder, Type resultType,
-                               ValueRange inputs,
-                               Location loc) -> std::optional<Value> {
+                               ValueRange inputs, Location loc) -> Value {
     if (inputs.size() != 1)
-      return std::nullopt;
+      return Value();
 
     return builder.create<UnrealizedConversionCastOp>(loc, resultType, inputs)
         .getResult(0);
   });
 
   addTargetMaterialization([&](OpBuilder &builder, Type resultType,
-                               ValueRange inputs,
-                               Location loc) -> std::optional<Value> {
+                               ValueRange inputs, Location loc) -> Value {
     if (inputs.size() != 1)
-      return std::nullopt;
+      return Value();
 
     return builder.create<UnrealizedConversionCastOp>(loc, resultType, inputs)
         .getResult(0);
@@ -581,7 +569,7 @@ KrnlTypeConverter::KrnlTypeConverter() {
 
 int64_t KrnlTypeConverter::getDefaultAllocAlignment(Type type) {
   int64_t alignment = -1;
-  if (auto tensorType = type.dyn_cast<TensorType>()) {
+  if (auto tensorType = mlir::dyn_cast<TensorType>(type)) {
     // Accelerators may have special versions of TensorType. Call the
     // conversions of accelerators.
     for (auto *accel : onnx_mlir::accel::Accelerator::getAccelerators()) {
@@ -601,7 +589,7 @@ bool hasNonIdentityLayout(Value val) {
   if (isNoneValue(val))
     return false;
   // Expect a memref now.
-  MemRefType type = val.getType().dyn_cast<MemRefType>();
+  MemRefType type = mlir::dyn_cast<MemRefType>(val.getType());
   assert(type && "expected a memref type");
   return hasNonIdentityLayout(type);
 }
@@ -617,22 +605,275 @@ bool hasNonIdentityLayout(ValueRange operands) {
 // Support functions for parallel region.
 //===----------------------------------------------------------------------===//
 
-// Return the outermost loop within [firstDim, lastDim) for which (ub-lb) >
-// minSize. Runtime dimensions are assumed to satisfy the size requirement by
-// definition. If found one, it is parDim and the function returns true.
+// Return the outermost loop within [firstInclusiveDim, lastExclusiveDim) for
+// which (ub-lb) > minSize. Runtime dimensions are assumed to satisfy the size
+// requirement by definition. If found one, it is parDim and the function
+// returns true. Otherwise parDim is unchanged.
 
-bool findSuitableParallelDimension(llvm::SmallVectorImpl<IndexExpr> &lb,
-    llvm::SmallVectorImpl<IndexExpr> &ub, int64_t firstDim, int64_t lastDim,
+bool findSuitableParallelDimension(ArrayRef<IndexExpr> lb,
+    ArrayRef<IndexExpr> ub, int64_t firstInclusiveDim, int64_t lastExclusiveDim,
     int64_t &parDim, int64_t minSize) {
-  for (int64_t i = firstDim; i < lastDim; ++i) {
+  assert(lb.size() == ub.size() && "expected identical ranks for lb/ub");
+  if (firstInclusiveDim < 0)
+    firstInclusiveDim = 0;
+  if (lastExclusiveDim > static_cast<int64_t>(lb.size()))
+    lastExclusiveDim = lb.size();
+  for (int64_t i = firstInclusiveDim; i < lastExclusiveDim; ++i) {
     IndexExpr tripCount = ub[i] - lb[i];
-    if (!tripCount.isLiteral() || tripCount.getLiteral() >= minSize) {
-      // Got one
+    if (!tripCount.isLiteral()) {
+      // Got a dyn dim, assume will be large enough.
+      LLVM_DEBUG(llvm::dbgs() << "Pick dim " << i << " because ub is dyn\n");
+      parDim = i;
+      return true;
+    }
+    if (tripCount.getLiteral() >= minSize) {
+      // Got a literal dim with large enough trip count.
+      LLVM_DEBUG(llvm::dbgs()
+                 << "Pick dim " << i << " as " << tripCount.getLiteral()
+                 << " greater than " << minSize << "\n");
       parDim = i;
       return true;
     }
   }
   return false;
+}
+
+//===----------------------------------------------------------------------===//
+// Support functions for simd.
+//===----------------------------------------------------------------------===//
+
+// New style.
+int64_t computeSuitableSimdUnrollFactor(MemRefType memRefType,
+    int64_t collapsedInnermostLoops, GenOpMix &genOps, bool canOverCompute,
+    int64_t &simdLoopStaticTripCount, bool &simdOnly) {
+  // Default return values for no simd.
+  simdLoopStaticTripCount = 0;
+  simdOnly = false;
+
+  // Analyze size of SIMD iterations.
+  int64_t staticSimdSize;
+  bool isStatic = MemRefBuilder::getStaticMemSize(
+      memRefType, staticSimdSize, -collapsedInnermostLoops);
+
+  Type elementType = memRefType.getElementType();
+  int64_t archVL = VectorMachineSupport::getArchVectorLength(elementType);
+  LLVM_DEBUG(llvm::dbgs() << "  simd archVL is " << archVL << "\n");
+
+  // Element type does nt support SIMD.
+  if (archVL <= 1) {
+    LLVM_DEBUG(llvm::dbgs() << "  simd disabled: no simd for this type\n");
+    return 1;
+  }
+  if (isStatic && staticSimdSize < archVL) {
+    LLVM_DEBUG(llvm::dbgs() << "  simd disabled: static trip count "
+                            << staticSimdSize << " too short for a VL\n");
+    return 1;
+  }
+  // Gather operation statics
+  int64_t vectorizedOpNum, scalarOpNum, estimatedMaxVectorRegisterPressure;
+  double avgVL =
+      VectorMachineSupport::getAvgArchVectorLength(genOps, elementType,
+          vectorizedOpNum, scalarOpNum, estimatedMaxVectorRegisterPressure);
+  if (avgVL < 1.5) {
+    LLVM_DEBUG(llvm::dbgs() << "  simd disabled: too few SIMD operations with "
+                            << avgVL << " avg VL\n");
+    return 1;
+  }
+  LLVM_DEBUG(llvm::dbgs() << "  simd enable: avg vl " << avgVL
+                          << ", vec op num " << vectorizedOpNum
+                          << ", max reg pressure "
+                          << estimatedMaxVectorRegisterPressure << "\n");
+
+  // Define a target max unroll as a function of register pressure.
+  int64_t unrollVL;
+  int64_t vrNum = VectorMachineSupport::getArchVectorRegisterNum();
+  if (estimatedMaxVectorRegisterPressure >= vrNum)
+    unrollVL = 1;
+  else if (estimatedMaxVectorRegisterPressure * 2 >= vrNum)
+    unrollVL = 2;
+  else if (estimatedMaxVectorRegisterPressure * 4 >= vrNum)
+    unrollVL = 4;
+  else
+    unrollVL = 8;
+  int64_t totVL = archVL * unrollVL;
+  // Refine unrolling factor so that it is suitable for short loops.
+  if (isStatic && (staticSimdSize < unrollVL * archVL)) {
+    int64_t newUnroll = floor((1.0 * staticSimdSize) / (1.0 * archVL));
+    LLVM_DEBUG(llvm::dbgs() << "  simd enable: size " << staticSimdSize
+                            << " , archVL " << archVL << ", unroll " << unrollVL
+                            << ", reduced to " << newUnroll << "\n");
+    unrollVL = newUnroll;
+    totVL = archVL * unrollVL;
+    if (canOverCompute && staticSimdSize % totVL != 0) {
+      // Does not divide; since we can over compute, increase unrollVL by 1.
+      LLVM_DEBUG(
+          llvm::dbgs() << "  simd enable: can over compute, boost unrollVL\n");
+      ++unrollVL;
+      totVL = archVL * unrollVL;
+    }
+    // Size control: if no ILP (unrollVL==1) or little ILP (unrollVL==2) with a
+    // leftover scalar loop, don't bother.
+    if (unrollVL == 1) {
+      LLVM_DEBUG(llvm::dbgs() << "  simd disable: too small unrollVL (1)\n");
+      return 1;
+    }
+    if (!canOverCompute && unrollVL == 2 && staticSimdSize % totVL != 0) {
+      LLVM_DEBUG(llvm::dbgs()
+                 << "  simd disable: small unrollVL (2) with leftovers\n");
+      return 1;
+    }
+  }
+  LLVM_DEBUG(llvm::dbgs() << "  simd enable: unrollVL " << unrollVL << "\n");
+  // Fill in the output values. Now that we have SIMD, simdLoopStaticTripCount
+  // is either the static simd size if the trip is not runtime, or -1 if its
+  // runtime.
+  simdLoopStaticTripCount = isStatic ? staticSimdSize : -1;
+  // Now that we have SIMD, we have SIMD only if the static component of the
+  // SIMD loop is positive and a multiple of VL.
+  simdOnly = (staticSimdSize > 1) && (staticSimdSize % totVL == 0);
+  LLVM_DEBUG(llvm::dbgs() << "  simd enable: totVL " << totVL << ", simd-only "
+                          << simdOnly << "\n");
+  if (canOverCompute && !simdOnly) {
+    LLVM_DEBUG(
+        llvm::dbgs() << "  simd enable: can over compute, force simdOnly\n");
+    simdOnly = true;
+  }
+  return archVL * unrollVL;
+}
+
+int64_t capVLForMaxSimdUnroll(
+    MemRefType memRefType, int64_t totVL, int64_t maxUnrollVL) {
+  if (totVL == 1)
+    return 1; // Simd already disabled, nothing to cap.
+  Type elementType = memRefType.getElementType();
+  int64_t archVL = VectorMachineSupport::getArchVectorLength(elementType);
+  int64_t unrollVL = totVL / archVL;
+  assert(archVL * unrollVL == totVL && "expected archVL to divide totVL");
+  if (unrollVL > maxUnrollVL) {
+    LLVM_DEBUG(llvm::dbgs() << "  simd enable: unrollVL " << unrollVL
+                            << " capped at " << maxUnrollVL << "\n");
+    unrollVL = maxUnrollVL;
+  }
+  return archVL * unrollVL;
+}
+
+int64_t boostVLForMinSimdUnroll(
+    MemRefType memRefType, MemRefType convertedMemRefType, int64_t totVL) {
+  if (totVL == 1)
+    return 1; // Simd already disabled, nothing to cap.
+  Type convertedElementType = convertedMemRefType.getElementType();
+  int64_t convertedArchVL =
+      VectorMachineSupport::getArchVectorLength(convertedElementType);
+  if (convertedArchVL > totVL) {
+    LLVM_DEBUG(llvm::dbgs()
+               << "  simd enable: boost totVL to " << convertedArchVL
+               << " because of type conversions.\n");
+    return convertedArchVL;
+  }
+  return totVL;
+}
+
+int64_t capVLForSimdOnly(
+    MemRefType memRefType, int64_t totVL, int64_t simdLoopStaticTripCount) {
+  if (totVL == 1)
+    return 1; // Simd already disabled, nothing to cap.
+  if (simdLoopStaticTripCount <= 1) {
+    // There is no static component to simd loop trip count.
+    LLVM_DEBUG(llvm::dbgs() << "  simd disable: dyn trip count, no simdOnly\n");
+    return 1;
+  }
+  int64_t archVL =
+      VectorMachineSupport::getArchVectorLength(memRefType.getElementType());
+  int64_t unrollVL = totVL / archVL;
+  assert(archVL * unrollVL == totVL && "expected archVL to divide totVL");
+  for (int64_t u = unrollVL; u > 0; --u) {
+    totVL = u * archVL;
+    if (simdLoopStaticTripCount % totVL == 0) {
+      // Success.
+      LLVM_DEBUG(llvm::dbgs()
+                 << "  simd enable: simd only with totVL " << totVL << "\n");
+      return totVL;
+    }
+  }
+  // Did not find any unroll factor for which totVL divides static trip count.
+  LLVM_DEBUG(llvm::dbgs() << "  simd disable: no simdONLY for trip count\n");
+  return 1;
+}
+
+// Old style.
+int64_t computeSuitableSimdUnrollFactor(MemRefType memRefType,
+    int64_t collapsedInnermostLoops, int64_t maxUnrollVL, bool canOverCompute,
+    int64_t &simdLoopStaticTripCount) {
+  assert(collapsedInnermostLoops > 0 && "expected at least one collapsed loop");
+  assert(maxUnrollVL > 0 && "expected positive max simd unroll");
+  simdLoopStaticTripCount = 0; // Initially assume no SIMD.
+  Type elementType = memRefType.getElementType();
+  int64_t archVL = VectorMachineSupport::getArchVectorLength(elementType);
+  LLVM_DEBUG(llvm::dbgs() << "  simd archVL is " << archVL << "\n");
+  if (archVL <= 1) {
+    LLVM_DEBUG(llvm::dbgs() << "  simd disabled: no simd\n");
+    return 1;
+  }
+  int64_t staticSize;
+  bool isStaticSize = MemRefBuilder::getStaticMemSize(
+      memRefType, staticSize, -collapsedInnermostLoops);
+  if (isStaticSize && staticSize < archVL) {
+    LLVM_DEBUG(llvm::dbgs() << "  simd disabled: trip count " << staticSize
+                            << " too short for a archVL of " << archVL << "\n");
+    return 1;
+  }
+  // Unless otherwise disabled, here is the estimated trip count.
+  if (canOverCompute &&
+      collapsedInnermostLoops == static_cast<int64_t>(memRefType.getRank())) {
+    // Fully collapsed and can add padding to be fine
+    simdLoopStaticTripCount = isStaticSize ? staticSize : -1;
+    return maxUnrollVL * archVL;
+  }
+  // We have a partially flattened operator. Since we do only simdize entire
+  // loops (i.e. we don't support scalar epilogues at this time), make sure
+  // the static size is a multiple of the VL. Get the VL of the store
+  // (output's element type).
+  if (staticSize % archVL != 0) {
+    LLVM_DEBUG(llvm::dbgs()
+               << "  simd disabled: partial flattened dims "
+               << collapsedInnermostLoops << " with size " << staticSize
+               << " is not 0 mod archVL " << archVL << "\n");
+    return 1;
+  }
+  // See if we can get a unroll factor.
+  for (int64_t u = maxUnrollVL; u > 0; --u) {
+    if (staticSize % (u * archVL) == 0) {
+      LLVM_DEBUG(llvm::dbgs()
+                 << "  partial flattened dims " << collapsedInnermostLoops
+                 << " with size " << staticSize << " works with VL " << archVL
+                 << " and unroll " << u << "\n");
+      simdLoopStaticTripCount = isStaticSize ? staticSize : -1;
+      return u * archVL;
+    }
+  }
+  llvm_unreachable("should always find u==1 feasible");
+}
+
+//===----------------------------------------------------------------------===//
+// Support for unrolling without leftovers.
+//===----------------------------------------------------------------------===//
+
+int64_t getNoLeftoverUnrollFactor(IndexExpr &lb, IndexExpr &ub,
+    int64_t unrollFactor, int64_t &literalTripCount) {
+  IndexExpr tripCount = ub - lb;
+  // Consider only literal trip counts.
+  if (!tripCount.isLiteral())
+    return 1;
+  literalTripCount = tripCount.getLiteral();
+  for (int64_t u = unrollFactor; u > 1; --u) {
+    if (literalTripCount % u == 0) {
+      // Found a suitable unroll factor that divides the trip count without
+      // without leftovers.
+      return u;
+    }
+  }
+  // None found;
+  return 1;
 }
 
 //===----------------------------------------------------------------------===//
@@ -649,7 +890,8 @@ void impl::onnxToKrnlParallelReport(Operation *op, bool successful,
   // Print report on this op.
   printf("==PAR-REPORT==, %s%s, %s, %s, %lld, %lld\n", opName.data(),
       (successful ? "-par" : ""), nodeNameStr.c_str(), comment.c_str(),
-      (long long int)loopLevel, (long long int)parallelLoopTripCount);
+      static_cast<long long int>(loopLevel),
+      static_cast<long long int>(parallelLoopTripCount));
 }
 
 void impl::onnxToKrnlSimdReport(Operation *op, bool successful,
@@ -669,7 +911,79 @@ void impl::onnxToKrnlSimdReport(Operation *op, bool successful,
   // Print report on this op.
   printf("==SIMD-REPORT==, %s%s, %s, %s, %lld, %lld\n", opName.data(),
       (successful ? "-simd" : ""), nodeNameStr.c_str(), message.c_str(),
-      (long long int)vectorLength, (long long int)simdLoopTripCount);
+      static_cast<long long int>(vectorLength),
+      static_cast<long long int>(simdLoopTripCount));
+}
+
+// The Gather op is data dependent: the value of index should be
+// within the input data size.
+// Add runtime check if enableSafeCodeGen is set true
+// Implementation comments vs. createGenerateRuntimeVerificationPass
+// This check is according to onnx op semantics, not general bound
+// check for memref. Implementation of RuntimeVerification could be
+// borrowed. Slightly difference is that onnx semenatics check is for
+// each dimension independently, not the final address is within
+// the memref bound.
+void genSafeCodeForGatherAlike(mlir::ConversionPatternRewriter &rewriter,
+    mlir::Location loc, Operation *op, Value data, Value indices,
+    int64_t axisLit) {
+  // Do nothing if not enabled
+  if (!enableSafeCodeGen)
+    return;
+
+  MultiDialectBuilder<KrnlBuilder, IndexExprBuilderForKrnl, MemRefBuilder,
+      MathBuilder>
+      create(rewriter, loc);
+
+  // Check all the element of indices
+  DimsExpr dataDims, indicesDims;
+  create.krnlIE.getShapeAsDims(data, dataDims);
+  create.krnlIE.getShapeAsDims(indices, indicesDims);
+  SymbolIndexExpr axisDim(dataDims[axisLit]);
+  int64_t indicesRank = mlir::cast<MemRefType>(indices.getType()).getRank();
+  ValueRange loopDef = create.krnl.defineLoops(indicesRank);
+  LiteralIndexExpr zeroIE(0);
+  DimsExpr lbs(indicesRank, zeroIE);
+  create.krnl.iterateIE(loopDef, loopDef, lbs, indicesDims,
+      [&](const KrnlBuilder &createKrnl, ValueRange loopInd) {
+        IndexExprScope innerLoopScope(createKrnl);
+
+        // Access function for indices
+        DimsExpr accessFct;
+        getIndexExprList<DimIndexExpr>(loopInd, accessFct);
+        // Compute index = indices[i][j]...[n]
+        Value indexVal = createKrnl.loadIE(indices, accessFct);
+        IndexExpr index = NonAffineIndexExpr(indexVal);
+
+        // index should be in range of [-r, r-1], where r = dim size of
+        // data[axis].
+        // Assume that the index is loaded from tensor with negative value
+        // correction.
+        Value errorCondition =
+            ((index < (-1) * axisDim) | (index >= axisDim)).getValue();
+        rewriter.create<scf::IfOp>(
+            loc, errorCondition,
+            /*thenBuilder=*/
+            [&](OpBuilder &thenBuilder, Location thenLoc) {
+              MultiDialectBuilder<KrnlBuilder, MathBuilder> create(
+                  thenBuilder, loc);
+              std::string nodeNameStr = "Warning: ";
+              nodeNameStr += op->getName().getStringRef().str() + " ";
+              StringAttr nodeName =
+                  op->getAttrOfType<mlir::StringAttr>("onnx_node_name");
+              if (nodeName && !nodeName.getValue().empty()) {
+                nodeNameStr += nodeName.getValue().str();
+              }
+              std::string msg = nodeNameStr +
+                                ": Value of indices is out of bound. " +
+                                "The out-of-bound indices value is: ";
+              create.krnl.printf(msg, indexVal, true);
+              msg = "The out-of-bound index is replaced with zero.\n";
+              create.krnl.printf(msg);
+              thenBuilder.create<scf::YieldOp>(thenLoc);
+            },
+            /*elseBuilder=*/nullptr);
+      });
 }
 
 } // namespace onnx_mlir

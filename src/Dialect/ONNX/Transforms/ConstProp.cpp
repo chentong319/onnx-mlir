@@ -19,6 +19,7 @@
 #include "mlir/Pass/Pass.h"
 #include "mlir/Transforms/DialectConversion.h"
 #include "mlir/Transforms/GreedyPatternRewriteDriver.h"
+#include "llvm/ADT/APFloat.h"
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/StringSet.h"
 #include "llvm/Support/Debug.h"
@@ -33,6 +34,7 @@
 #include "src/Pass/Passes.hpp"
 #include "src/Support/TypeUtilities.hpp"
 
+#include <fenv.h>
 #include <math.h>
 #include <numeric>
 
@@ -109,7 +111,7 @@ bool isNotDisabled(StringRef name) {
 
 ElementsAttr getConstValueElements(Value constValue) {
   ONNXConstantOp constOp = cast<ONNXConstantOp>(constValue.getDefiningOp());
-  return constOp.getValueAttr().cast<ElementsAttr>();
+  return mlir::cast<ElementsAttr>(constOp.getValueAttr());
 }
 
 // Creates ONNXConstantOp with the location from replacingValue.
@@ -121,6 +123,16 @@ Value createReplacingConstantOp(
 // Helper to restrict specialization to non-bool types.
 template <typename T>
 using EnableNotBool = std::enable_if_t<!std::is_same_v<T, bool>>;
+
+template <typename T>
+using EnableBool = std::enable_if_t<std::is_same_v<T, bool>>;
+
+template <typename T>
+using EnableInteger =
+    std::enable_if_t<std::is_integral_v<T> && !std::is_same_v<T, bool>>;
+
+template <typename T>
+using EnableFloatingPoint = std::enable_if_t<std::is_floating_point_v<T>>;
 
 /// Checks whether a variadic value is produced by dense ONNXConstantOps.
 bool isVariadicOperandFromDenseONNXConstantOp(ValueRange operands) {
@@ -134,21 +146,45 @@ Value ConstZeroTensor(
           type, rewriter.getZeroAttr(type.getElementType())));
 }
 
-WideNum asWideNum(double n, Type elemType) {
-  return wideZeroDispatch(elemType, [n](auto wideZero) {
-    using cpptype = decltype(wideZero);
-    constexpr BType TAG = toBType<cpptype>;
-    return WideNum::widen<TAG>(static_cast<cpptype>(n));
-  });
+template <typename GetFPConstFunc =
+              std::function<APFloat(const llvm::fltSemantics &, bool)>,
+    typename GetIntConstFunc = std::function<APInt(unsigned)>>
+Value getClipConstantOfType(PatternRewriter &rewriter, ShapedType type,
+    Location loc, GetFPConstFunc fpConstantFunc, bool isNegative,
+    GetIntConstFunc intConstantFunc) {
+  OnnxBuilder create(rewriter, loc);
+  auto elemType = type.getElementType();
+  if (auto floatType = dyn_cast<FloatType>(elemType)) {
+    auto fpValue =
+        fpConstantFunc(floatType.getFloatSemantics(), /*Negative=*/isNegative);
+    return create.constant(DenseElementsAttr::get(
+        RankedTensorType::get({}, elemType), llvm::ArrayRef(fpValue)));
+  }
+  auto intValue = intConstantFunc(elemType.getIntOrFloatBitWidth());
+  return create.constant(DenseElementsAttr::get(
+      RankedTensorType::get({}, elemType), llvm::ArrayRef(intValue)));
 }
 
-/// Checks whether a constant tensor's elements are all equal to a given scalar.
-bool isConstOf(Value constValue, double n) {
-  ElementsAttr constElements = getConstValueElements(constValue);
-  Type elemType = constElements.getElementType();
-  assert(!elemType.isInteger(1) && "booleans are not supported");
-  WideNum w = asWideNum(n, elemType);
-  return ElementsAttrBuilder::allEqual(constElements, w);
+Value createMaximumValueForClip(
+    PatternRewriter &rewriter, ShapedType type, Value value) {
+
+  // Return 'value' if exists, as there is no need to clip to largest.
+  if (!isNoneValue(value))
+    return value;
+
+  return getClipConstantOfType(rewriter, type, value.getLoc(),
+      llvm::APFloat::getLargest, false, llvm::APInt::getMaxValue);
+}
+
+Value createMinimumValueForClip(
+    PatternRewriter &rewriter, ShapedType type, Value value) {
+
+  // Return 'value' if exists, as there is no need to clip to lowest.
+  if (!isNoneValue(value))
+    return value;
+
+  return getClipConstantOfType(rewriter, type, value.getLoc(),
+      llvm::APFloat::getLargest, true, llvm::APInt::getMinValue);
 }
 
 // Extracts number from a scalar constant value.
@@ -203,7 +239,41 @@ struct ElementWiseBinaryOpImpl<ONNXMulOp, T, EnableNotBool<T>> {
 
 template <typename T>
 struct ElementWiseBinaryOpImpl<ONNXDivOp, T, EnableNotBool<T>> {
-  static T eval(T lhs, T rhs) { return lhs / rhs; }
+  static T eval(T lhs, T rhs) {
+    if constexpr (std::is_integral_v<T>) {
+      if (rhs == 0) {
+        // Undefined behavior. We can return any value.
+        // Performing the divison would crash.
+        return lhs;
+      }
+    }
+    return lhs / rhs;
+  }
+};
+
+template <typename T>
+struct ElementWiseBinaryOpImpl<ONNXBitwiseAndOp, T, EnableInteger<T>> {
+  static T eval(T lhs, T rhs) { return lhs & rhs; }
+};
+
+template <typename T>
+struct ElementWiseBinaryOpImpl<ONNXBitwiseOrOp, T, EnableInteger<T>> {
+  static T eval(T lhs, T rhs) { return lhs | rhs; }
+};
+
+template <typename T>
+struct ElementWiseBinaryOpImpl<ONNXAndOp, T, EnableBool<T>> {
+  static T eval(T lhs, T rhs) { return lhs && rhs; }
+};
+
+template <typename T>
+struct ElementWiseBinaryOpImpl<ONNXOrOp, T, EnableBool<T>> {
+  static T eval(T lhs, T rhs) { return lhs || rhs; }
+};
+
+template <typename T>
+struct ElementWiseBinaryOpImpl<ONNXXorOp, T, EnableBool<T>> {
+  static T eval(T lhs, T rhs) { return lhs != rhs; }
 };
 
 template <typename T>
@@ -292,7 +362,7 @@ constexpr auto subCombiner(Type elemType) {
 template <typename ElementwiseBinaryOp>
 Value ConstPropElementwiseBinary(PatternRewriter &rewriter,
     Value replacingValue, Value lhsValue, Value rhsValue) {
-  auto replacingType = replacingValue.getType().cast<ShapedType>();
+  auto replacingType = mlir::cast<ShapedType>(replacingValue.getType());
 
   ElementsAttr lhs = getConstValueElements(lhsValue);
   ElementsAttr rhs = getConstValueElements(rhsValue);
@@ -311,7 +381,7 @@ template <typename ElementwiseBinaryOp>
 Value ConstPropVariadicElementwiseBinary(
     PatternRewriter &rewriter, Value replacingValue, ValueRange inputList) {
   assert(inputList.size() > 0 && "The variadic input is empty");
-  auto replacingType = replacingValue.getType().cast<ShapedType>();
+  auto replacingType = mlir::cast<ShapedType>(replacingValue.getType());
 
   Value lhsValue = inputList[0];
   if (inputList.size() == 1)
@@ -341,8 +411,58 @@ struct ElementWiseUnaryOpImpl {
 };
 
 template <typename T>
+struct ElementWiseUnaryOpImpl<ONNXBitwiseNotOp, T, EnableInteger<T>> {
+  static T eval(T val) { return ~val; }
+};
+
+template <typename T>
+struct ElementWiseUnaryOpImpl<ONNXAbsOp, T, EnableNotBool<T>> {
+  static T eval(T val) { return (T)abs((double)val); }
+};
+
+template <typename T>
+struct ElementWiseUnaryOpImpl<ONNXCeilOp, T, EnableNotBool<T>> {
+  static T eval(T val) { return ceil(val); }
+};
+
+template <typename T>
+struct ElementWiseUnaryOpImpl<ONNXCosOp, T, EnableFloatingPoint<T>> {
+  static T eval(T val) { return cos(val); }
+};
+
+template <typename T>
+struct ElementWiseUnaryOpImpl<ONNXErfOp, T, EnableNotBool<T>> {
+  static T eval(T val) { return std::erf(val); }
+};
+
+template <typename T>
+struct ElementWiseUnaryOpImpl<ONNXExpOp, T, EnableFloatingPoint<T>> {
+  static T eval(T val) { return std::exp(val); }
+};
+
+template <typename T>
+struct ElementWiseUnaryOpImpl<ONNXFloorOp, T, EnableNotBool<T>> {
+  static T eval(T val) { return floor(val); }
+};
+
+template <typename T>
+struct ElementWiseUnaryOpImpl<ONNXLogOp, T, EnableFloatingPoint<T>> {
+  static T eval(T val) { return std::log(val); }
+};
+
+template <typename T>
 struct ElementWiseUnaryOpImpl<ONNXNegOp, T, EnableNotBool<T>> {
   static T eval(T val) { return -val; }
+};
+
+template <typename T>
+struct ElementWiseUnaryOpImpl<ONNXNotOp, T, EnableBool<T>> {
+  static T eval(T val) { return !val; }
+};
+
+template <typename T>
+struct ElementWiseUnaryOpImpl<ONNXSinOp, T, EnableFloatingPoint<T>> {
+  static T eval(T val) { return sin(val); }
 };
 
 template <>
@@ -353,6 +473,19 @@ struct ElementWiseUnaryOpImpl<ONNXSqrtOp, double> {
 template <typename T>
 struct ElementWiseUnaryOpImpl<ONNXReluOp, T, EnableNotBool<T>> {
   static T eval(T val) { return (val < 0) ? 0 : val; }
+};
+
+template <typename T>
+struct ElementWiseUnaryOpImpl<ONNXReciprocalOp, T, EnableNotBool<T>> {
+  static T eval(T val) { return (1 / val); }
+};
+
+template <typename T>
+struct ElementWiseUnaryOpImpl<ONNXRoundOp, T, EnableNotBool<T>> {
+  static T eval(T val) {
+    /*std::*/ fesetround(FE_TONEAREST);
+    return (T)std::rint(val);
+  }
 };
 
 template <typename ElementwiseUnaryOp>
@@ -367,7 +500,7 @@ template <typename ElementwiseUnaryOp>
 Value ConstPropElementwiseUnary(
     PatternRewriter &rewriter, Value replacingValue, Value constValue) {
   Type replacingElemType =
-      replacingValue.getType().cast<ShapedType>().getElementType();
+      mlir::cast<ShapedType>(replacingValue.getType()).getElementType();
 
   ElementsAttr constElements = getConstValueElements(constValue);
   assert(replacingElemType == constElements.getElementType() &&
@@ -389,7 +522,7 @@ Value ConstPropElementwiseUnary(
 
 Value ConstPropWhere(PatternRewriter &rewriter, Value replacingValue,
     Value condValue, Value lhsValue, Value rhsValue) {
-  auto replacingType = replacingValue.getType().cast<ShapedType>();
+  auto replacingType = mlir::cast<ShapedType>(replacingValue.getType());
 
   ElementsAttr cond = getConstValueElements(condValue);
   assert(cond.getElementType().isInteger(1) &&
@@ -425,9 +558,10 @@ Attribute getIdentity(Builder &builder, Type type) {
   if constexpr (std::is_same_v<ReduceOp, ONNXAddOp>) {
     return builder.getZeroAttr(type);
   } else if constexpr (std::is_same_v<ReduceOp, ONNXMulOp>) {
-    if (auto itype = type.dyn_cast<IntegerType>())
+    if (auto itype = mlir::dyn_cast<IntegerType>(type))
       return builder.getIntegerAttr(type, APInt(itype.getWidth(), 1));
-    assert(type.isa<FloatType>() && "only supported types are integer, float");
+    assert(mlir::isa<FloatType>(type) &&
+           "only supported types are integer, float");
     return builder.getFloatAttr(type, 1.0);
   } else {
     // Follow NumPy which doesn't support empty tensor for Min, Max, Mean.
@@ -451,7 +585,7 @@ Value ConstPropReduceAxesRange(PatternRewriter &rewriter, Value replacingValue,
   // Find absoluteAxes, converting any negative axes to non-negative.
   SmallVector<unsigned, 4> absoluteAxes;
   ElementsAttr data = getConstValueElements(dataValue);
-  int64_t rank = data.getType().cast<ShapedType>().getRank();
+  int64_t rank = mlir::cast<ShapedType>(data.getType()).getRank();
   for (APInt a : axesRange) {
     int64_t axis = a.getSExtValue();
     assert(-rank <= axis && axis < rank && "axis out of range");
@@ -478,7 +612,7 @@ Value ConstPropReduceAxesRange(PatternRewriter &rewriter, Value replacingValue,
   } else if (data.empty()) {
     Attribute identity = getIdentity<ReduceOp>(rewriter, elemType);
     reduced = DenseElementsAttr::get(
-        replacingValue.getType().cast<ShapedType>(), {identity});
+        mlir::cast<ShapedType>(replacingValue.getType()), {identity});
   } else {
     bool keepdims = getSIntAttr(op, "keepdims", /*default=*/1) != 0;
     OnnxElementsAttrBuilder elementsBuilder(rewriter.getContext());
@@ -716,10 +850,10 @@ Value ConstPropTranspose(
     PatternRewriter &rewriter, Value replacingValue, Value constValue) {
   // TODO: figure out if default may be omitted and what to do in that case
   ArrayAttr permAttr =
-      replacingValue.getDefiningOp()->getAttr("perm").cast<ArrayAttr>();
+      mlir::cast<ArrayAttr>(replacingValue.getDefiningOp()->getAttr("perm"));
   SmallVector<uint64_t, 4> perm;
   for (auto permVal : permAttr.getValue())
-    perm.emplace_back(permVal.cast<IntegerAttr>().getInt());
+    perm.emplace_back(mlir::cast<IntegerAttr>(permVal).getInt());
 
   ElementsAttr constElements = getConstValueElements(constValue);
   OnnxElementsAttrBuilder elementsBuilder(rewriter.getContext());
@@ -853,7 +987,7 @@ Value ConstPropPad(PatternRewriter &rewriter, Value replacingValue, Value data,
 
 Value ConstPropConcat(PatternRewriter &rewriter, Value replacingValue,
     ValueRange operands, IntegerAttr axisAttr) {
-  ShapedType outputType = replacingValue.getType().cast<ShapedType>();
+  ShapedType outputType = mlir::cast<ShapedType>(replacingValue.getType());
   int64_t axis = axisAttr.getValue().getSExtValue();
   if (axis < 0)
     axis += outputType.getRank();
@@ -894,7 +1028,7 @@ Value ConstPropGather(PatternRewriter &rewriter, Value replacingValue,
   ONNXGatherOp gatherOp = cast<ONNXGatherOp>(op);
   int64_t axis = gatherOp.getAxis();
   if (axis < 0)
-    axis += inputValue.getType().cast<ShapedType>().getRank();
+    axis += mlir::cast<ShapedType>(inputValue.getType()).getRank();
 
   OnnxElementsAttrBuilder elementsBuilder(rewriter.getContext());
   ElementsAttr inputElements = getConstValueElements(inputValue);
@@ -927,7 +1061,7 @@ Value ConstPropConstantOfShape(PatternRewriter &rewriter, Value replacingValue,
 
   // ONNXConstantOfShapeOp::inferShapes() makes sure that the 'value' attribute
   // here is specified
-  ElementsAttr constElements = value.cast<ElementsAttr>();
+  ElementsAttr constElements = mlir::cast<ElementsAttr>(value);
 
   OnnxElementsAttrBuilder elementsBuilder(rewriter.getContext());
   ElementsAttr expandedElements =
@@ -942,7 +1076,7 @@ Value ConstPropConstantOfShape(PatternRewriter &rewriter, Value replacingValue,
 
 Value ConstPropRange(PatternRewriter &rewriter, Value replacingValue,
     Value start, Value limit, Value delta) {
-  ShapedType replacingType = replacingValue.getType().cast<ShapedType>();
+  ShapedType replacingType = mlir::cast<ShapedType>(replacingValue.getType());
 
   OnnxElementsAttrBuilder elementsBuilder(rewriter.getContext());
   ElementsAttr rangeElements = elementsBuilder.range(
@@ -976,7 +1110,7 @@ Value ConstPropNonZero(
 std::vector<Value> ConstPropSplit(PatternRewriter &rewriter,
     ResultRange replacingValues, Value input, Value split, int64_t axis) {
   unsigned numResults = replacingValues.size();
-  ShapedType inputType = input.getType().cast<ShapedType>();
+  ShapedType inputType = mlir::cast<ShapedType>(input.getType());
   ArrayRef<int64_t> inputShape = inputType.getShape();
 
   int64_t splitAxisSize = inputShape[axis];
@@ -1018,19 +1152,18 @@ class SplitOfConst : public OpRewritePattern<ONNXSplitOp> {
 public:
   using OpRewritePattern<ONNXSplitOp>::OpRewritePattern;
 
-  LogicalResult match(ONNXSplitOp splitOp) const override {
+  LogicalResult matchAndRewrite(
+      ONNXSplitOp splitOp, PatternRewriter &rewriter) const override {
     if (!isDenseONNXConstant(splitOp.getInput()))
       return failure();
     Value split = splitOp.getSplit();
     if (!(isa<NoneType>(split.getType()) || isDenseONNXConstant(split)))
       return failure();
-    return success();
-  }
 
-  void rewrite(ONNXSplitOp splitOp, PatternRewriter &rewriter) const override {
     rewriter.replaceOp(splitOp,
         ConstPropSplit(rewriter, splitOp.getResults(), splitOp.getInput(),
             splitOp.getSplit(), splitOp.getAxis()));
+    return success();
   }
 };
 
@@ -1038,13 +1171,11 @@ class IfOfConst : public OpRewritePattern<ONNXIfOp> {
 public:
   using OpRewritePattern<ONNXIfOp>::OpRewritePattern;
 
-  LogicalResult match(ONNXIfOp ifOp) const override {
+  LogicalResult matchAndRewrite(
+      ONNXIfOp ifOp, PatternRewriter &rewriter) const override {
     if (!isDenseONNXConstant(ifOp.getCond()))
       return failure();
-    return success();
-  }
 
-  void rewrite(ONNXIfOp ifOp, PatternRewriter &rewriter) const override {
     Value cond = ifOp.getCond();
     ElementsAttr condElements = getConstValueElements(cond);
     auto splitValues = condElements.getValues<bool>();
@@ -1067,6 +1198,7 @@ public:
     rewriter.eraseOp(yieldOp);
     rewriter.inlineBlockBefore(newBlock, ifOp);
     rewriter.replaceOp(ifOp, outputs);
+    return success();
   }
 };
 
@@ -1093,7 +1225,7 @@ void ConstPropONNXToONNXPass::runOnOperation() {
 
   RewritePatternSet patterns(context);
   getConstPropONNXToONNXPatterns(patterns);
-  if (failed(applyPatternsAndFoldGreedily(function, std::move(patterns))))
+  if (failed(applyPatternsGreedily(function, std::move(patterns))))
     signalPassFailure();
 }
 

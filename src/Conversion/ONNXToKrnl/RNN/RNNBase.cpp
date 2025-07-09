@@ -42,9 +42,9 @@ Value allocAllHidden(ConversionPatternRewriter &rewriter, Location loc,
 
     // Convert the output type to MemRefType.
     Type convertedType = typeConverter->convertType(output.getType());
-    assert(convertedType && convertedType.isa<MemRefType>() &&
+    assert(convertedType && mlir::isa<MemRefType>(convertedType) &&
            "Failed to convert type to MemRefType");
-    MemRefType memRefType = convertedType.cast<MemRefType>();
+    MemRefType memRefType = mlir::cast<MemRefType>(convertedType);
 
     alloc = create.mem.alignedAlloc(memRefType, dims);
   } else {
@@ -62,7 +62,7 @@ Value allocIntermediateState(
   IndexExprScope scope(create.krnlIE);
   auto memRefType = MemRefType::get({/*batch_size=*/dimAt(X, 1),
                                         /*hidden_size=*/dimAt(R, 2)},
-      X.getType().cast<ShapedType>().getElementType());
+      mlir::cast<ShapedType>(X.getType()).getElementType());
   SmallVector<IndexExpr, 2> dims;
   // Get batch_size from X.
   dims.emplace_back(create.krnlIE.getShapeAsDim(X, 1));
@@ -88,14 +88,14 @@ void initializeIntermediateStates(ConversionPatternRewriter &rewriter,
       rewriter, loc);
   IndexExprScope childScope(create.krnl);
   ValueRange loopDef = create.krnl.defineLoops(nLoops);
-  SmallVector<IndexExpr, 4> lbs(nLoops, LiteralIndexExpr(0));
+  SmallVector<IndexExpr, 4> lbs(nLoops, LitIE(0));
   Value boundVal = (direction == FORWARD || direction == BIDIRECTIONAL)
                        ? forwardHt
                        : reverseHt;
   SmallVector<IndexExpr, 4> ubs;
   create.krnlIE.getShapeAsDims(boundVal, ubs);
   create.krnl.iterateIE(loopDef, loopDef, lbs, ubs,
-      [&](KrnlBuilder &createKrnl, ValueRange loopInd) {
+      [&](const KrnlBuilder &createKrnl, ValueRange loopInd) {
         SmallVector<Value, 4> IVs;
         IVs.emplace_back(loopInd[0]);
         IVs.emplace_back(loopInd[1]);
@@ -167,9 +167,9 @@ Value allocHiddenOrCell(ConversionPatternRewriter &rewriter, Location loc,
 
     // Convert the output type to MemRefType.
     Type convertedType = typeConverter->convertType(output.getType());
-    assert(convertedType && convertedType.isa<MemRefType>() &&
+    assert(convertedType && mlir::isa<MemRefType>(convertedType) &&
            "Failed to convert type to MemRefType");
-    MemRefType memRefType = convertedType.cast<MemRefType>();
+    MemRefType memRefType = mlir::cast<MemRefType>(convertedType);
     alloc = create.mem.alignedAlloc(memRefType, dims);
   } else {
     alloc = output;
@@ -184,7 +184,7 @@ void initializeHiddenAndCell(ConversionPatternRewriter &rewriter, Location loc,
   MultiDialectBuilder<KrnlBuilder, MathBuilder, MemRefBuilder> create(
       rewriter, loc);
   Value zero = create.math.constant(elementType, 0);
-  unsigned htRank = ht.getType().cast<MemRefType>().getRank();
+  unsigned htRank = mlir::cast<MemRefType>(ht.getType()).getRank();
   Value iZero = create.math.constantIndex(0);
   SmallVector<Value, 4> htLbs(htRank, iZero);
   SmallVector<Value, 4> htUbs;
@@ -193,7 +193,7 @@ void initializeHiddenAndCell(ConversionPatternRewriter &rewriter, Location loc,
   }
   ValueRange loops = create.krnl.defineLoops(htRank);
   create.krnl.iterate(loops, loops, htLbs, htUbs,
-      [&](KrnlBuilder &createKrnl, ValueRange indices) {
+      [&](const KrnlBuilder &createKrnl, ValueRange indices) {
         Value hiddenVal = zero;
         if (!isNoneValue(initialH))
           hiddenVal = createKrnl.load(initialH, indices);
@@ -222,7 +222,7 @@ void stateToOutputForHiddenOrCell(ConversionPatternRewriter &rewriter,
     Value numOfElements = getDynamicMemRefSize(rewriter, loc, val);
     create.krnl.memcpy(output, val, numOfElements);
   } else { // BIDIRECTIONAL
-    unsigned rank = forwardVal.getType().cast<MemRefType>().getRank();
+    unsigned rank = mlir::cast<MemRefType>(forwardVal.getType()).getRank();
     Value zero = create.math.constantIndex(0);
     Value one = create.math.constantIndex(1);
     SmallVector<Value, 4> lbs(rank, zero);
@@ -232,7 +232,7 @@ void stateToOutputForHiddenOrCell(ConversionPatternRewriter &rewriter,
     }
     ValueRange loops = create.krnl.defineLoops(2);
     create.krnl.iterate(loops, loops, lbs, ubs,
-        [&](KrnlBuilder &createKrnl, ValueRange indices) {
+        [&](const KrnlBuilder &createKrnl, ValueRange indices) {
           Value b(indices[0]), h(indices[1]);
           // Forward.
           Value val = createKrnl.load(forwardVal, {b, h});
@@ -258,7 +258,7 @@ Value emitXSliceAt(ConversionPatternRewriter &rewriter, Location loc, Value X,
 
   int64_t batchSize = dimAt(X, 1);
   int64_t inputSize = dimAt(X, 2);
-  Type elementType = X.getType().cast<ShapedType>().getElementType();
+  Type elementType = mlir::cast<ShapedType>(X.getType()).getElementType();
   MemRefType sliceXType = MemRefType::get({batchSize, inputSize}, elementType);
 
   // Allocate a buffer
@@ -275,8 +275,8 @@ Value emitXSliceAt(ConversionPatternRewriter &rewriter, Location loc, Value X,
     ubs.emplace_back(create.mem.dim(sliceX, r));
   }
   ValueRange loops = create.krnl.defineLoops(2);
-  create.krnl.iterate(
-      loops, loops, lbs, ubs, [&](KrnlBuilder &createKrnl, ValueRange indices) {
+  create.krnl.iterate(loops, loops, lbs, ubs,
+      [&](const KrnlBuilder &createKrnl, ValueRange indices) {
         Value b(indices[0]), i(indices[1]);
         Value val = createKrnl.load(X, {timestepIV, b, i});
         createKrnl.store(val, sliceX, {b, i});
@@ -289,9 +289,10 @@ Value emitXSliceAt(ConversionPatternRewriter &rewriter, Location loc, Value X,
 // When a sample reachs the limit of its sequence len, nextHt will be padded
 // with 0 (or initialH), and Ht will keep the last value at the sequence end
 // so that the final value Ht is the last value at their sequence len.
-Value handleSequenceLens(KrnlBuilder &createKrnl, MathBuilder &createMath,
-    Value sequenceLens, Value initialH, Value nextHt, Value sequenceIV,
-    Value directionIV, Value bs, Value hs, Value Ht) {
+Value handleSequenceLens(const KrnlBuilder &createKrnl,
+    const MathBuilder &createMath, Value sequenceLens, Value initialH,
+    Value nextHt, Value sequenceIV, Value directionIV, Value bs, Value hs,
+    Value Ht) {
   if (!isNoneValue(sequenceLens)) {
     Value sequenceUB = createKrnl.load(sequenceLens, {bs});
     Value initial;

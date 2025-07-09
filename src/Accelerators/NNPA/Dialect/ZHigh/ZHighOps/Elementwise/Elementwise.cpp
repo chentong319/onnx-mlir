@@ -4,7 +4,7 @@
 
 //===------------------ Elementwise.cpp - ZHigh Operations ----------------===//
 //
-// Copyright 2019-2022 The IBM Research Authors.
+// Copyright 2019-2024 The IBM Research Authors.
 //
 // =============================================================================
 //
@@ -22,7 +22,7 @@ namespace zhigh {
 //===----------------------------------------------------------------------===//
 // AddOp
 LogicalResult ZHighAddOp::inferShapes(
-    std::function<void(mlir::Region &)> doShapeInference) {
+    std::function<void(Region &)> doShapeInference) {
   return inferShapeForUnaryOps(this->getOperation());
 }
 
@@ -30,7 +30,7 @@ LogicalResult ZHighAddOp::inferShapes(
 // SubOp
 
 LogicalResult ZHighSubOp::inferShapes(
-    std::function<void(mlir::Region &)> doShapeInference) {
+    std::function<void(Region &)> doShapeInference) {
   return inferShapeForUnaryOps(this->getOperation());
 }
 
@@ -38,7 +38,7 @@ LogicalResult ZHighSubOp::inferShapes(
 // MulOp
 
 LogicalResult ZHighMulOp::inferShapes(
-    std::function<void(mlir::Region &)> doShapeInference) {
+    std::function<void(Region &)> doShapeInference) {
   return inferShapeForUnaryOps(this->getOperation());
 }
 
@@ -46,7 +46,7 @@ LogicalResult ZHighMulOp::inferShapes(
 // DivOp
 
 LogicalResult ZHighDivOp::inferShapes(
-    std::function<void(mlir::Region &)> doShapeInference) {
+    std::function<void(Region &)> doShapeInference) {
   return inferShapeForUnaryOps(this->getOperation());
 }
 
@@ -54,7 +54,7 @@ LogicalResult ZHighDivOp::inferShapes(
 // MinOp
 
 LogicalResult ZHighMinOp::inferShapes(
-    std::function<void(mlir::Region &)> doShapeInference) {
+    std::function<void(Region &)> doShapeInference) {
   return inferShapeForUnaryOps(this->getOperation());
 }
 
@@ -62,7 +62,7 @@ LogicalResult ZHighMinOp::inferShapes(
 // MaxOp
 
 LogicalResult ZHighMaxOp::inferShapes(
-    std::function<void(mlir::Region &)> doShapeInference) {
+    std::function<void(Region &)> doShapeInference) {
   return inferShapeForUnaryOps(this->getOperation());
 }
 
@@ -70,7 +70,7 @@ LogicalResult ZHighMaxOp::inferShapes(
 // LogOp
 
 LogicalResult ZHighLogOp::inferShapes(
-    std::function<void(mlir::Region &)> doShapeInference) {
+    std::function<void(Region &)> doShapeInference) {
   return inferShapeForUnaryOps(this->getOperation());
 }
 
@@ -78,6 +78,22 @@ LogicalResult ZHighLogOp::inferShapes(
 // ExpOp
 
 LogicalResult ZHighExpOp::inferShapes(
+    std::function<void(Region &)> doShapeInference) {
+  return inferShapeForUnaryOps(this->getOperation());
+}
+
+//===----------------------------------------------------------------------===//
+// InvSqrtOp
+
+LogicalResult ZHighInvSqrtOp::inferShapes(
+    std::function<void(mlir::Region &)> doShapeInference) {
+  return inferShapeForUnaryOps(this->getOperation());
+}
+
+//===----------------------------------------------------------------------===//
+// LeakyReluOp
+
+LogicalResult ZHighLeakyReluOp::inferShapes(
     std::function<void(mlir::Region &)> doShapeInference) {
   return inferShapeForUnaryOps(this->getOperation());
 }
@@ -86,6 +102,14 @@ LogicalResult ZHighExpOp::inferShapes(
 // ReluOp
 
 LogicalResult ZHighReluOp::inferShapes(
+    std::function<void(Region &)> doShapeInference) {
+  return inferShapeForUnaryOps(this->getOperation());
+}
+
+//===----------------------------------------------------------------------===//
+// GeluOp
+
+LogicalResult ZHighGeluOp::inferShapes(
     std::function<void(mlir::Region &)> doShapeInference) {
   return inferShapeForUnaryOps(this->getOperation());
 }
@@ -94,7 +118,7 @@ LogicalResult ZHighReluOp::inferShapes(
 // TanhOp
 
 LogicalResult ZHighTanhOp::inferShapes(
-    std::function<void(mlir::Region &)> doShapeInference) {
+    std::function<void(Region &)> doShapeInference) {
   return inferShapeForUnaryOps(this->getOperation());
 }
 
@@ -102,6 +126,14 @@ LogicalResult ZHighTanhOp::inferShapes(
 // SigmoiOp
 
 LogicalResult ZHighSigmoidOp::inferShapes(
+    std::function<void(Region &)> doShapeInference) {
+  return inferShapeForUnaryOps(this->getOperation());
+}
+
+//===----------------------------------------------------------------------===//
+// SqrtOp
+
+LogicalResult ZHighSqrtOp::inferShapes(
     std::function<void(mlir::Region &)> doShapeInference) {
   return inferShapeForUnaryOps(this->getOperation());
 }

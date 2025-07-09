@@ -81,13 +81,13 @@ struct ONNXCategoryMapperOpLowering
 
     // Convert the output type to MemRefType.
     Type convertedType = typeConverter->convertType(*op->result_type_begin());
-    assert(convertedType && convertedType.isa<MemRefType>() &&
+    assert(convertedType && mlir::isa<MemRefType>(convertedType) &&
            "Failed to convert type to MemRefType");
-    MemRefType memRefType = convertedType.cast<MemRefType>();
+    MemRefType memRefType = mlir::cast<MemRefType>(convertedType);
 
     // Basic information.
     int64_t rank = memRefType.getShape().size();
-    ShapedType inputType = X.getType().cast<ShapedType>();
+    ShapedType inputType = mlir::cast<ShapedType>(X.getType());
     Type elementType = inputType.getElementType();
 
     // Insert an allocation and deallocation for the result of this operation.
@@ -102,15 +102,17 @@ struct ONNXCategoryMapperOpLowering
     // Convert the cats type to MemRefType.
     Type convertedCatsInt64s =
         typeConverter->convertType(cats_int64s.getType());
-    assert(convertedCatsInt64s && convertedCatsInt64s.isa<MemRefType>() &&
+    assert(convertedCatsInt64s && mlir::isa<MemRefType>(convertedCatsInt64s) &&
            "Failed to convert type to MemRefType");
-    MemRefType catsInt64sInMemRefType = convertedCatsInt64s.cast<MemRefType>();
+    MemRefType catsInt64sInMemRefType =
+        mlir::cast<MemRefType>(convertedCatsInt64s);
     Type convertedCatsStrings =
         typeConverter->convertType(cats_strings.getType());
-    assert(convertedCatsStrings && convertedCatsStrings.isa<MemRefType>() &&
+    assert(convertedCatsStrings &&
+           mlir::isa<MemRefType>(convertedCatsStrings) &&
            "Failed to convert type to MemRefType");
     MemRefType catsStringsInMemRefType =
-        convertedCatsStrings.cast<MemRefType>();
+        mlir::cast<MemRefType>(convertedCatsStrings);
 
     // Create loop invariant values.
     Value constantForCatsInt64s = create.krnl.constant(
@@ -138,11 +140,11 @@ struct ONNXCategoryMapperOpLowering
     create.krnlIE.getShapeAsDims(X, ubs);
 
     if (emitPrintStmts)
-      create.krnl.printTensor("Input tensor:\n", X);
+      create.krnl.printTensor("Input tensor:%s%d%e", X);
 
     ValueRange loopDef = create.krnl.defineLoops(rank);
     create.krnl.iterateIE(loopDef, loopDef, lbs, ubs,
-        [&](KrnlBuilder &createKrnl, ValueRange loopInd) {
+        [&](const KrnlBuilder &createKrnl, ValueRange loopInd) {
           // Determine the index of 'inputElem' in the perfect hash table
           // 'pHash'. Note: the index might not be valid (this happens
           // when the 'inputElem' is not present in the perfect hash
@@ -218,7 +220,7 @@ private:
           int32_t size = cats_int64s.size();
           for (int32_t idx = 0; idx < size; ++idx) {
             Attribute elemAttr = getElemAttr(cats_int64s_ArrayAttr, idx);
-            int64_t key = elemAttr.cast<IntegerAttr>().getInt();
+            int64_t key = mlir::cast<IntegerAttr>(elemAttr).getInt();
             dict[key] = idx;
           }
 
@@ -233,7 +235,7 @@ private:
           int32_t size = cats_strings.size();
           for (int32_t idx = 0; idx < size; ++idx) {
             Attribute elemAttr = getElemAttr(cats_strings_ArrayAttr, idx);
-            StringRef key = elemAttr.cast<StringAttr>().getValue();
+            StringRef key = mlir::cast<StringAttr>(elemAttr).getValue();
             dict[key] = idx;
           }
 
@@ -251,14 +253,14 @@ private:
   }
 
   Value loadElement(Value memref, ValueRange loopInd, Type elementType,
-      int64_t rank, KrnlBuilder &createKrnl) const {
+      int64_t rank, const KrnlBuilder &createKrnl) const {
     Value inputElem;
     TypeSwitch<Type>(elementType)
         .Case<IntegerType>(
             [&](IntegerType) { inputElem = createKrnl.load(memref, loopInd); })
         .Case<krnl::StringType>([&](krnl::StringType stringType) {
           ArrayRef<int64_t> shape =
-              memref.getType().cast<ShapedType>().getShape();
+              mlir::cast<ShapedType>(memref.getType()).getShape();
           SmallVector<int64_t, 4> newShape;
           bool hasDynamicDim = false;
           for (uint64_t i = 0; i < shape.size(); i++) {
@@ -279,7 +281,7 @@ private:
             SmallVector<int64_t, 4> strides;
             int64_t alignmentOffset; // not used, just to make the function call
                                      // completed.
-            if (getStridesAndOffset(memRefType, strides, alignmentOffset)
+            if (memRefType.getStridesAndOffset(strides, alignmentOffset)
                     .failed())
               llvm_unreachable("Failed to get strides");
             Value stringMemRef =

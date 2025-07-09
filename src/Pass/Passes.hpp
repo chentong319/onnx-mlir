@@ -12,7 +12,8 @@
 //
 //===----------------------------------------------------------------------===//
 
-#pragma once
+#ifndef ONNX_MLIR_PASSES_H
+#define ONNX_MLIR_PASSES_H
 
 #include <memory>
 #include <string>
@@ -56,10 +57,13 @@ std::unique_ptr<mlir::Pass> createConstPropONNXToONNXPass();
 std::unique_ptr<mlir::Pass> createInstrumentPass();
 std::unique_ptr<mlir::Pass> createInstrumentPass(
     const std::string &ops, unsigned actions);
+/// Pass for instrument cleanup.
+std::unique_ptr<mlir::Pass> createInstrumentCleanupPass();
 
 /// Passes for instrumenting the ONNX ops to print their operand type
 /// signatures at runtime.
-std::unique_ptr<mlir::Pass> createInstrumentONNXSignaturePass();
+std::unique_ptr<mlir::Pass> createInstrumentONNXSignaturePass(
+    const std::string opPattern, const std::string nodePattern);
 
 /// Pass for simplifying shape-related ONNX operations.
 std::unique_ptr<mlir::Pass> createSimplifyShapeRelatedOpsPass();
@@ -84,11 +88,13 @@ std::unique_ptr<mlir::Pass> createONNXPreKrnlVerifyPass();
 /// Add pass for lowering to Krnl IR.
 std::unique_ptr<mlir::Pass> createLowerToKrnlPass();
 std::unique_ptr<mlir::Pass> createLowerToKrnlPass(bool enableTiling,
-    bool enableSIMD, bool enableParallel, std::string opsForCall);
+    bool enableSIMD, bool enableParallel, bool enableFastMath,
+    std::string opsForCall);
 void configureOnnxToKrnlLoweringPass(bool reportOnParallel,
     bool parallelIsEnabled, std::string specificParallelOps, bool reportOnSimd,
     bool simdIsEnabled);
 std::unique_ptr<mlir::Pass> createProcessScfParallelPrivatePass();
+std::unique_ptr<mlir::Pass> createProcessKrnlParallelClausePass();
 
 #ifdef ONNX_MLIR_ENABLE_STABLEHLO
 /// Add pass for lowering to Stablehlo IR.
@@ -102,6 +108,7 @@ std::unique_ptr<mlir::Pass> createElideConstGlobalValuePass();
 namespace krnl {
 /// Pass for lowering frontend dialects to Krnl IR dialect.
 std::unique_ptr<mlir::Pass> createConvertKrnlToAffinePass();
+std::unique_ptr<mlir::Pass> createConvertKrnlToAffinePass(bool parallelEnabled);
 
 /// Pass for lowering Seq in Krnl dialect.
 std::unique_ptr<mlir::Pass> createConvertSeqToMemrefPass();
@@ -126,3 +133,4 @@ std::unique_ptr<mlir::Pass> createGenerateHISIMComputationPass();
 
 
 } // namespace onnx_mlir
+#endif

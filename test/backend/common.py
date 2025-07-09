@@ -5,7 +5,7 @@
 # Copyright 2021-2022 The IBM Research Authors.
 #
 ################################################################################
-# commom function `compile_model` called by both
+# Common function `compile_model` called by both
 # SignatureExecutionSession and EndiannessAwareExecutionSession
 ################################################################################
 from __future__ import absolute_import
@@ -114,7 +114,8 @@ def compile_model(model, emit):
     command_list = [TEST_DRIVER]
     if args.Optlevel:
         command_list.append("-O" + args.Optlevel)
-    if args.mcpu:
+    if args.mcpu:  # deprecated
+        print("warning, --mcpu option is deprecated, please use --march instead")
         command_list.append("--mcpu=" + args.mcpu)
     if args.march:
         command_list.append("--march=" + args.march)
@@ -141,6 +142,13 @@ def compile_model(model, emit):
     command_list.append(target[emit])
     command_list.append(model_name)
     command_list.append("-o=" + exec_base)
+
+    # Additional args passed in by TEST_COMPILE_ARGS
+    # Args are separated by ';'
+    additional_args = os.getenv("TEST_COMPILE_ARGS")
+    if additional_args is not None:
+        compile_args = additional_args.split(";")
+        command_list += compile_args
 
     # Call frontend to process model_name.onnx, bit code will be generated.
     dynamic_inputs_dims = determine_dynamic_parameters(name)

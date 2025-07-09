@@ -4,7 +4,7 @@
 
 //===------ KrnlMemcpy.cpp - Lower KrnlMemcpyOp ---------------------------===//
 //
-// Copyright 2019-2022 The IBM Research Authors.
+// Copyright 2019-2024 The IBM Research Authors.
 //
 // =============================================================================
 //
@@ -57,9 +57,10 @@ public:
     Type i1Ty = IntegerType::get(context, 1);
     Type i64Ty = IntegerType::get(context, 64);
     Type i8PtrTy = getPointerType(context, IntegerType::get(context, 8));
-    Type elementType = src.getType().cast<LLVM::LLVMStructType>().getBody()[1];
+    Type elementType =
+        mlir::cast<LLVM::LLVMStructType>(src.getType()).getBody()[1];
     int64_t eltSize = getMemRefEltSizeInBytes(
-        memcpyOp.getSrc().getType().dyn_cast<MemRefType>());
+        mlir::dyn_cast<MemRefType>(memcpyOp.getSrc().getType()));
     Value eltSizeInBytes = create.llvm.constant(i64Ty, eltSize);
 
     // Get a symbol reference to the memcpy function, inserting it if necessary.
@@ -90,7 +91,7 @@ public:
     Value sizeInBytes = create.llvm.mul(elemsToCopy, eltSizeInBytes);
 
     // Is volatile (set to false).
-    Value isVolatile = create.llvm.constant(i1Ty, (int64_t)0);
+    Value isVolatile = create.llvm.constant(i1Ty, static_cast<int64_t>(0));
 
     // Memcpy call
     create.llvm.call(

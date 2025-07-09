@@ -4,8 +4,8 @@
 
 //==== ONNXToTosaLegalizeUtils.hpp - ONNX dialects to TOSA lowering Utils-===//
 //
-// Copyright 2020 The TensorFlow Authors. All Rights Reserved.
-// Copyright (c) 2022-2023 Advanced Micro Devices, Inc.
+// Copyright 2020-2024 The TensorFlow Authors. All Rights Reserved.
+// Copyright (c) 2022-2024 Advanced Micro Devices, Inc.
 //
 // =============================================================================
 //
@@ -17,7 +17,7 @@
 #ifndef ONNXMLIR_CONVERSION_ONNXTOTOSA_TOSALEGALIZEUTILS_H
 #define ONNXMLIR_CONVERSION_ONNXTOTOSA_TOSALEGALIZEUTILS_H
 
-#include "mlir/Dialect/Quant/QuantTypes.h"        // from @llvm-project
+#include "mlir/Dialect/Quant/IR/QuantTypes.h"     // from @llvm-project
 #include "mlir/Dialect/Tosa/IR/TosaOps.h"         // from @llvm-project
 #include "mlir/Dialect/Tosa/Utils/ShapeUtils.h"   // from @llvm-project
 #include "mlir/IR/BuiltinAttributes.h"            // from @llvm-project
@@ -37,7 +37,7 @@ mlir::RankedTensorType reduceAxisToOne(llvm::ArrayRef<int64_t> shape,
 // Returns the value TOSA ConstOp
 template <typename T>
 T getValueFromTosaConst(mlir::Value &val) {
-  return val.getDefiningOp<mlir::tosa::ConstOp>().getValue().cast<T>();
+  return mlir::cast<T>(val.getDefiningOp<mlir::tosa::ConstOp>().getValues());
 }
 
 // Creates a TOSA operation and performs shape inference on the individual
@@ -45,6 +45,7 @@ T getValueFromTosaConst(mlir::Value &val) {
 template <typename TosaOp, typename... Args>
 TosaOp CreateOpAndInfer(mlir::PatternRewriter &rewriter, mlir::Location loc,
     mlir::Type result_ty, Args &&... args) {
+
   auto op = rewriter.create<TosaOp>(loc, result_ty, args...);
 
   mlir::InferShapedTypeOpInterface shapeInterface =
@@ -64,10 +65,11 @@ TosaOp CreateOpAndInfer(mlir::PatternRewriter &rewriter, mlir::Location loc,
   // the new result shaped type. This is because rescale can include a cast to
   // different bit-width types and does not have a TypeAttr to define the
   // target type.
+  assert(returnedShapes.size() >= 1 && "Expected at least one returned shape");
   auto predictedShape = returnedShapes[0];
   if (predictedShape.hasRank())
     updateType(nullptr, op, predictedShape.getDims(),
-        result_ty.cast<mlir::ShapedType>().getElementType());
+        mlir::cast<mlir::ShapedType>(result_ty).getElementType());
   return op;
 }
 

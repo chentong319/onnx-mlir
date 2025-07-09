@@ -4,7 +4,7 @@
 
 //===---------- ONNXLegalityCheck.hpp - Check legality for ONNX ops -------===//
 //
-// Copyright 2019-2023 The IBM Research Authors.
+// Copyright 2019-2024 The IBM Research Authors.
 //
 // =============================================================================
 //
@@ -14,8 +14,10 @@
 //
 //===----------------------------------------------------------------------===//
 
-#pragma once
+#ifndef ONNX_MLIR_LEGALITY_H
+#define ONNX_MLIR_LEGALITY_H
 
+#include "src/Accelerators/NNPA/Support/NNPALimit.hpp"
 #include "src/Conversion/ONNXToKrnl/ONNXToKrnlCommon.hpp"
 #include "src/Dialect/ONNX/ONNXDimAnalysis.hpp"
 #include "src/Dialect/ONNX/ONNXOps.hpp"
@@ -51,4 +53,9 @@ bool meetPoolParamRestrictions(mlir::Operation *op, int64_t inputShape,
 bool onnxToZHighUnsupportedReport(
     mlir::Operation *op, const std::string &message);
 
-bool onnxToZHighInCompatibilityReport(mlir::Operation *op);
+bool onnxToZHighInCompatibilityReport(
+    mlir::Operation *op, const std::string &message);
+
+bool onnxToZHighInCompatibilityReport(mlir::Operation *op, NNPALevel level);
+
+#endif
