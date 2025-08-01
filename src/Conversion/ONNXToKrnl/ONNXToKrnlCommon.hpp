@@ -234,8 +234,7 @@ mlir::Value emitScalarOpFor(mlir::ConversionPatternRewriter &rewriter,
       llvm::SmallVector<mlir::Value, 4> scalarsSplatted(scalarOperands);
       MultiDialectBuilder<MathBuilder> create(rewriter, loc);
       create.math.splatToMatch(scalarsSplatted);
-      return rewriter.create<ScalarIOp<Op>>(
-          loc, elementType, scalarsSplatted, std::nullopt);
+      return rewriter.create<ScalarIOp<Op>>(loc, elementType, scalarsSplatted);
     }
     llvm_unreachable("unsupported integer operation");
   } else if (mlir::isa<mlir::FloatType>(actualElementType)) {
@@ -247,8 +246,7 @@ mlir::Value emitScalarOpFor(mlir::ConversionPatternRewriter &rewriter,
       llvm::SmallVector<mlir::Value, 4> scalarsSplatted(scalarOperands);
       MultiDialectBuilder<MathBuilder> create(rewriter, loc);
       create.math.splatToMatch(scalarsSplatted);
-      return rewriter.create<ScalarFOp<Op>>(
-          loc, elementType, scalarsSplatted, std::nullopt);
+      return rewriter.create<ScalarFOp<Op>>(loc, elementType, scalarsSplatted);
     }
     llvm_unreachable("unsupported float operation");
   } else {
@@ -356,6 +354,8 @@ void populateLoweringONNXRandomNormalLikeOpPattern(
     mlir::RewritePatternSet &, mlir::TypeConverter &, mlir::MLIRContext *);
 void populateLoweringONNXRandomUniformOpPattern(
     mlir::RewritePatternSet &, mlir::TypeConverter &, mlir::MLIRContext *);
+void populateLoweringONNXRandomUniformLikeOpPattern(
+    mlir::RewritePatternSet &, mlir::TypeConverter &, mlir::MLIRContext *);
 void populateLoweringONNXReductionOpPattern(mlir::RewritePatternSet &,
     mlir::TypeConverter &, mlir::MLIRContext *, bool enableSIMD,
     bool enableParallel);
@@ -460,8 +460,8 @@ void populateLoweringONNXScatterNDOpPattern(
     mlir::RewritePatternSet &, mlir::TypeConverter &, mlir::MLIRContext *);
 void populateLoweringONNXShapeOpPattern(
     mlir::RewritePatternSet &, mlir::TypeConverter &, mlir::MLIRContext *);
-void populateLoweringONNXSliceOpPattern(
-    mlir::RewritePatternSet &, mlir::TypeConverter &, mlir::MLIRContext *);
+void populateLoweringONNXSliceOpPattern(mlir::RewritePatternSet &,
+    mlir::TypeConverter &, mlir::MLIRContext *, bool enableParallel);
 void populateLoweringONNXSqueezeOpPattern(
     mlir::RewritePatternSet &, mlir::TypeConverter &, mlir::MLIRContext *);
 void populateLoweringONNXSqueezeV11OpPattern(
@@ -482,8 +482,8 @@ void populateLoweringONNXNonZeroOpPattern(
     mlir::RewritePatternSet &, mlir::TypeConverter &, mlir::MLIRContext *);
 void populateLoweringONNXReverseSequenceOpPattern(
     mlir::RewritePatternSet &, mlir::TypeConverter &, mlir::MLIRContext *);
-void populateLoweringONNXExpandOpPattern(
-    mlir::RewritePatternSet &, mlir::TypeConverter &, mlir::MLIRContext *);
+void populateLoweringONNXExpandOpPattern(mlir::RewritePatternSet &,
+    mlir::TypeConverter &, mlir::MLIRContext *, bool enableParallel);
 void populateLoweringONNXOneHotOpPattern(
     mlir::RewritePatternSet &, mlir::TypeConverter &, mlir::MLIRContext *);
 void populateLoweringONNXCompressOpPattern(

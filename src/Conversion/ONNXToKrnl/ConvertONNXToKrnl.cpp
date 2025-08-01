@@ -222,6 +222,7 @@ void populateONNXToKrnlConversionPattern(RewritePatternSet &patterns,
   populateLoweringONNXRandomNormalOpPattern(patterns, typeConverter, ctx);
   populateLoweringONNXRandomNormalLikeOpPattern(patterns, typeConverter, ctx);
   populateLoweringONNXRandomUniformOpPattern(patterns, typeConverter, ctx);
+  populateLoweringONNXRandomUniformLikeOpPattern(patterns, typeConverter, ctx);
   populateLoweringONNXLpNormalizationOpPattern(patterns, typeConverter, ctx);
   populateLoweringONNXLRNOpPattern(patterns, typeConverter, ctx);
   populateLoweringONNXQLinearMatMulOpPattern(patterns, typeConverter, ctx);
@@ -253,7 +254,7 @@ void populateONNXToKrnlConversionPattern(RewritePatternSet &patterns,
   populateLoweringONNXScatterNDOpPattern(patterns, typeConverter, ctx);
   populateLoweringONNXSpaceToDepthOpPattern(patterns, typeConverter, ctx);
   populateLoweringONNXShapeOpPattern(patterns, typeConverter, ctx);
-  populateLoweringONNXSliceOpPattern(patterns, typeConverter, ctx);
+  populateLoweringONNXSliceOpPattern(patterns, typeConverter, ctx, enableParallel);
   populateLoweringONNXSqueezeOpPattern(patterns, typeConverter, ctx);
   populateLoweringONNXSqueezeV11OpPattern(patterns, typeConverter, ctx);
   populateLoweringONNXSplitOpPattern(patterns, typeConverter, ctx);
@@ -265,7 +266,7 @@ void populateONNXToKrnlConversionPattern(RewritePatternSet &patterns,
   populateLoweringONNXResizeOpPattern(patterns, typeConverter, ctx);
   populateLoweringONNXNonZeroOpPattern(patterns, typeConverter, ctx);
   populateLoweringONNXReverseSequenceOpPattern(patterns, typeConverter, ctx);
-  populateLoweringONNXExpandOpPattern(patterns, typeConverter, ctx);
+  populateLoweringONNXExpandOpPattern(patterns, typeConverter, ctx, enableParallel);
   populateLoweringONNXOneHotOpPattern(patterns, typeConverter, ctx);
   populateLoweringONNXCompressOpPattern(patterns, typeConverter, ctx);
   populateLoweringONNXPrintSignaturePattern(patterns, typeConverter, ctx);
