@@ -356,6 +356,7 @@ OpsWithCanonicalizer = [
     "Resize",
     "RNN",
     "Shape",
+    "Split",
     "Size",
     "SoftmaxV11",
     "SpaceToDepth",
@@ -428,6 +429,7 @@ OpsWithVerifier = [
     "Pad",
     "Pow",
     "RandomNormalLike",
+    "RandomUniformLike",
     "Range",
     "Reshape",
     "Resize",
@@ -483,6 +485,8 @@ OpsWithResultTypeInference = [
     "Loop",
     "RandomNormal",
     "RandomNormalLike",
+    "RandomUniform",
+    "RandomUniformLike",
     "Scan",
 ]
 

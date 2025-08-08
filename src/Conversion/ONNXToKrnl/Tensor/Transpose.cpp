@@ -14,6 +14,7 @@
 
 #include "src/Conversion/ONNXToKrnl/ONNXToKrnlCommon.hpp"
 #include "src/Dialect/ONNX/ONNXOps/ShapeHelper.hpp"
+#include "src/Support/SmallVectorHelper.hpp"
 
 #define DEBUG_TYPE "lowering-to-krnl"
 
@@ -151,18 +152,10 @@ private:
     SmallVector<IndexExpr, 4> ubs;
     create->krnlIE.getShapeAsDims(inputMemRef, ubs);
 
-    if (enableParallel) {
-      int64_t parId;
-      // TODO: consider flattening the outer dims, or along inner dims.
-      if (findSuitableParallelDimension(lbs, ubs, 0, 2, parId, 8)) {
-        create->krnl.parallel(loopDef[parId]);
-        onnxToKrnlParallelReport(
-            op, true, parId, lbs[parId], ubs[parId], "scalar transpose");
-      } else {
-        onnxToKrnlParallelReport(
-            op, false, -1, -1, "no dim with enough work in scalar transpose");
-      }
-    }
+    // Enable parallelism if required.
+    if (enableParallel)
+      tryCreateKrnlParallel(
+          create->krnl, op, "scalar transpose", loopDef, lbs, ubs, 0, 2, {}, 8);
 
     create->krnl.iterateIE(loopDef, loopDef, lbs, ubs,
         [&](const KrnlBuilder &createKrnl, ValueRange loadIndices) {
@@ -190,14 +183,8 @@ private:
     int64_t parId = -1;
     if (enableParallel) {
       // TODO: consider flattening the outer dims, or along inner dims.
-      if (findSuitableParallelDimension(lbs, ubs, 0, 2, parId, 8)) {
-        create->krnl.parallel(loopDef[parId]);
-        onnxToKrnlParallelReport(
-            op, true, parId, lbs[parId], ubs[parId], "scalar transpose");
-      } else {
-        onnxToKrnlParallelReport(op, false, -1, -1,
-            "no dim with enough work in scalar output transpose");
-      }
+      parId = tryCreateKrnlParallel(
+          create->krnl, op, "scalar transpose", loopDef, lbs, ubs, 0, 2, {}, 8);
     }
     // Compute the reverse permute pattern, so that we know what the inputs
     // indices should be given the output indices.
@@ -215,6 +202,7 @@ private:
       reversePermute.emplace_back(inputIndex);
     }
 
+    SmallVector<Value, 4> optimizedLoopDef = loopDef;
     // Test for easy unrolling for the innermost store dimension.
     const int64_t unroll = 8;
     int64_t uDim = rank - 1;
@@ -223,37 +211,15 @@ private:
       int64_t u =
           getNoLeftoverUnrollFactor(lbs[uDim], ubs[uDim], unroll, tripCount);
       if (u > 1) {
-        // We can easily unroll: save original lb and ub of the unroll dim.
-        IndexExpr lb = lbs[uDim];
-        // Reorganize lb/ub of last dim to be from 0 .. tripCount / u;
-        lbs[uDim] = LitIE(0);
-        ubs[uDim] = LitIE(tripCount / u);
-        // Iterate over blocked innermost loop.
-        create->krnl.iterateIE(loopDef, loopDef, lbs, ubs,
-            [&](const KrnlBuilder &createKrnl, ValueRange indices) {
-              IndexExprScope innerScope(createKrnl);
-              SmallVector<IndexExpr, 4> storeIndices = SymListIE(indices);
-              // Reconstitute the original index as "lb + u * index".
-              IndexExpr uIndex = storeIndices[uDim] * u;
-              uIndex = SymIE(lb) + uIndex;
-              // Fully unrolled loop.
-              for (int i = 0; i < u; ++i) {
-                // And add the current unroll amount (0.. u-1).
-                storeIndices[uDim] = uIndex + LitIE(i);
-                // Compute the indices used by the load operation.
-                SmallVector<IndexExpr, 4> loadIndices;
-                for (int64_t o = 0; o < rank; ++o)
-                  loadIndices.emplace_back(storeIndices[reversePermute[o]]);
-                Value loadData = createKrnl.loadIE(inputMemRef, loadIndices);
-                createKrnl.storeIE(loadData, outputMemRef, storeIndices);
-              }
-            });
-        return;
+        ValueRange blockedLoopDef = create->krnl.block(loopDef[uDim], u);
+        create->krnl.unroll(blockedLoopDef[1]);
+        optimizedLoopDef = firstFew<Value, 4>(loopDef, -2);
+        optimizedLoopDef.emplace_back(blockedLoopDef[0]);
+        optimizedLoopDef.emplace_back(blockedLoopDef[1]);
       }
     }
 
-    // Default without unrolling.
-    create->krnl.iterateIE(loopDef, loopDef, lbs, ubs,
+    create->krnl.iterateIEWithOrigLoop(loopDef, optimizedLoopDef, lbs, ubs,
         [&](const KrnlBuilder &createKrnl, ValueRange storeIndices) {
           // Compute the indices used by the load operation.
           SmallVector<Value, 4> loadIndices;
@@ -316,17 +282,10 @@ private:
       // Because we are doing block copying, there is no risk that the
       // parallelized dimension result in systematic false sharing of the
       // destination tensor. No precautions are needed here.
-      int64_t parId;
       // Note that if there is only 1 dim, lastExclusiveDim is automatically
-      // reduced to 1 in the findSuitableParallelDimension call.
-      if (findSuitableParallelDimension(lbs, inUBs, 0, 2, parId, 8)) {
-        create->krnl.parallel(loopDef[parId]);
-        onnxToKrnlParallelReport(
-            op, true, parId, lbs[parId], inUBs[parId], "block transpose");
-      } else {
-        onnxToKrnlParallelReport(
-            op, false, -1, -1, "no dim with enough work in block transpose");
-      }
+      // reduced to 1 in the tryCreateKrnlParallel call.
+      tryCreateKrnlParallel(create->krnl, op, "block transpose", loopDef, lbs,
+          inUBs, 0, 2, {}, 8);
     }
     create->krnl.iterateIE(loopDef, loopDef, lbs, inUBs,
         [&](const KrnlBuilder &createKrnl, ValueRange indices) {

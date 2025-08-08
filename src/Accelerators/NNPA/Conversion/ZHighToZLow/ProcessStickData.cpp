@@ -55,14 +55,13 @@ void emitDynamicQuantizationLinearMinMaxFromStickifiedInput(
   int64_t parId = 0;
   int64_t threadNum = 1;
   if (enableParallel) {
-    if (findSuitableParallelDimension(lbs, ubs, 0, rank - 1, parId, 8)) {
-      threadNum = 8; // TODO use more flexible value.
-      onnxToKrnlParallelReport(op, true, parId, lbs[parId], ubs[parId],
-          "simd min/max for DQL in parallel ");
-    } else {
+    int64_t parId = tryCreateKrnlParallel(create.krnl, op,
+        "simd min/max for DQL in parallel", {}, lbs, ubs, 0, rank - 1, {},
+        /*min iter for going parallel*/ 8, /*createKrnlParallel=*/false);
+    if (parId == -1) {
       enableParallel = false;
-      onnxToKrnlParallelReport(
-          op, false, -1, -1, "not enough work in simd min/max for DQL");
+    } else {
+      threadNum = 8; // TODO use more flexible value.
     }
   }
 
@@ -98,10 +97,10 @@ void emitDynamicQuantizationLinearMinMaxFromStickifiedInput(
       [&](const KrnlBuilder &ck, ValueRange loopInd) {
         IndexExprScope scope(ck);
         IndexExpr t = DimIE(loopInd[0]);
-        DimsExpr currDims = SymListIE(dims);
+        DimsExpr currDims = DimListIE(dims);
         // Reduce lbs, ubs for parallel region, if any.
-        DimsExpr currLbs = SymListIE(lbs);
-        DimsExpr currUbs = SymListIE(ubs);
+        DimsExpr currLbs = DimListIE(lbs);
+        DimsExpr currUbs = DimListIE(ubs);
         // In sequential cases (threadNum ==1, loopInd[1,2]== orig lb,ub).
         currLbs[parId] = SymIE(loopInd[1]);
         currUbs[parId] = SymIE(loopInd[2]);
