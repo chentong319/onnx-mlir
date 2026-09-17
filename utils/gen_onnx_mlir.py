@@ -282,6 +282,7 @@ version_dict = {
     "Sum": [13],
     "Tan": [22],
     "Tanh": [13],
+    "TensorScatter": [24],
     "TfIdfVectorizer": [9],
     "ThresholdedRelu": [22],
     "Tile": [13],

@@ -101,6 +101,7 @@ struct ONNXUnimplementedOpShapeHelper : public ONNXOpShapeHelper {
 // Classes with implemented shape inference but not shape helper.
 
 // clang-format off
+using ONNXTensorScatterOpShapeHelper = ONNXUnimplementedOpShapeHelper;
 using ONNXCallOpShapeHelper = ONNXUnimplementedOpShapeHelper;
 using ONNXIfOpShapeHelper = ONNXUnimplementedOpShapeHelper; // Reason: recursive, Opt, Seq
 using ONNXLoopOpShapeHelper = ONNXUnimplementedOpShapeHelper; // Reason: recursive, Opt, Seq
